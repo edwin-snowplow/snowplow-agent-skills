@@ -1,0 +1,40 @@
+{
+  "$schema": "http://iglucentral.com/schemas/com.snowplowanalytics.self-desc/schema/jsonschema/1-0-0#",
+  "description": "Schema for tracking purchase events",
+  "self": {
+    "vendor": "com.example",
+    "name": "purchase_event",
+    "format": "jsonschema",
+    "version": "1-0-0"
+  },
+  "type": "object",
+  "properties": {
+    "product_id": {
+      "type": "string",
+      "description": "Unique product identifier",
+      "maxLength": 255
+    },
+    "product_name": {
+      "type": "string",
+      "description": "Product name",
+      "maxLength": 500
+    },
+    "amount": {
+      "type": "number",
+      "description": "Purchase amount",
+      "minimum": 0
+    },
+    "currency": {
+      "type": "string",
+      "description": "Currency code (ISO 4217)",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "quantity": {
+      "type": "integer",
+      "description": "Number of items purchased",
+      "minimum": 1
+    }
+  },
+  "required": ["product_id", "amount", "currency"],
+  "additionalProperties": false
+}
