@@ -1,103 +1,16 @@
-# SQL reference — Athena Iceberg failed-events recovery
+# Recovery SQL templates — Athena Iceberg
 
-Load this file when you reach the SQL-generation phase. It holds the canonical
-column set, type-conversion rules, reserved words, and statement templates that
-must be applied exactly.
+Fill in every `<placeholder>`. These are the exact statements to hand the user at each phase; the
+reasoning behind them lives in `reference/` and the failure modes in `troubleshooting/`. The SQL here
+is identical to the canonical recovery flow — do not paraphrase it.
 
-The bundled `scripts/generate_insert.py` implements the column-classification and
-type-conversion rules below — prefer running it for the full INSERT (Phase 6). Use
-the rules here directly for the identification/inspection/test queries, and as the
-fallback when code execution is unavailable.
-
----
-
-## The failure context column
-
-Always named `contexts_com_snowplowanalytics_snowplow_failure_1`. In an Iceberg
-table it is a native `ARRAY(ROW(...))`, **not** a JSON string. Fields of each ROW:
-
-| Field | Type | Notes |
-|---|---|---|
-| `_schema_version` | `VARCHAR` | |
-| `component_name` | `VARCHAR` | Pipeline component that rejected the event |
-| `component_version` | `VARCHAR` | |
-| `data` | `VARCHAR` | Original event payload as a JSON string — read with `json_extract_scalar` |
-| `errors` | `ARRAY(ROW(...))` | Structured validation errors |
-| `failure_type` | `VARCHAR` | e.g. `SchemaViolation` |
-| `schema` | `VARCHAR` | Iglu URI of the schema that failed validation |
-| `timestamp` | `TIMESTAMP` | When the failure occurred |
-
-Access the first element with 1-indexed notation: `contexts_..._failure_1[1].schema`.
-Athena does **not** support deep nested dot notation (`col[1].data.field`) in a
-`SELECT` — you must `UNNEST` the array first, then `json_extract_scalar` the `data` field.
+The bundled `scripts/generate_insert.py` implements the column-classification and type-conversion
+rules for the full INSERT (Phase 7) — prefer running it. Use the statements here directly for the
+identification/inspection/test queries, and as the fallback when code execution is unavailable.
 
 ---
 
-## Column classification (for the INSERT)
-
-For every column in the **good** events table DESCRIBE, decide its SELECT expression:
-
-1. **The failure column** (`contexts_com_snowplowanalytics_snowplow_failure_1`) → **exclude entirely** from both the column list and the SELECT.
-2. **`load_tstamp`** → `current_timestamp AS load_tstamp` (fresh timestamp for reprocessed rows).
-3. **The recovery column** (the entity being repaired) → the user's confirmed `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))` expression, followed by `AS <column_name>`. Strip any trailing `AS <column_name>` the user already included before re-adding it.
-4. **Atomic column** (present in the canonical atomic set below) → pass through by name.
-5. **Custom column also present in the failed table DESCRIBE** → pass through by name (it can hold values for events that failed on a *different* entity).
-6. **Custom column only in the good table** → `CAST(NULL AS <athena_type>) AS <column_name>`.
-
-After classifying, report a sanity summary to the user:
-`good columns: N | failed columns: M | custom pass-through: P | custom nulled: Q`.
-Warn if the recovery column name is not found in the good DESCRIBE.
-
----
-
-## Hive → Athena type conversion
-
-DESCRIBE output uses Hive DDL types. Convert to Athena query-expression types for the
-`CAST(NULL AS ...)` cases:
-
-| Hive (DESCRIBE) | Athena (INSERT expression) |
-|---|---|
-| `string` | `varchar` |
-| `int` | `integer` |
-| `array<...>` | `array(...)` |
-| `struct<...>` | `row(...)` |
-| `field:type` (colon separator) | `field type` (space separator) |
-| `decimal(18, 2)` | `decimal(18,2)` (no space) |
-
-Mechanical steps: `array<`→`array(`, `struct<`→`row(`, every `>`→`)`, `name:`→`name `,
-`string`→`varchar`, `int`→`integer`, remove the space inside `decimal(p, s)`.
-
-### Reserved words inside ROW(...) definitions
-
-If a struct **field name** equals a reserved word, it must be double-quoted or Athena
-rejects the type, e.g. `row("timestamp" varchar, ...)`. Quote a field name when it (case-insensitive) is one of:
-
-```
-current_time current_date current_timestamp timestamp date time interval
-year month day hour minute second zone value values table column row type
-position filter over partition range select from where group order by having
-limit union all distinct as in not and or is null true false case when then
-else end exists between like natural cross join inner outer left right full on using
-```
-
-Confirmed real cases seen in Snowplow tables: `"current_time"` (media_player_2),
-`"timestamp"` (spamreport_3, geolocation_context_1), `"all"` (consent_withdrawn_1),
-`"type"` (ecommerce_action_1), `"value"` (http_cookie_1, http_header_1),
-`"position"` (ecommerce_product_1).
-
----
-
-## Parsing DESCRIBE output
-
-- Lines may be **tab-separated** or **space-separated** depending on how the user copied them. For space-separated, split only on the *first* run of whitespace (`col_name` then the rest is the type) so complex types containing spaces stay intact.
-- Skip blank lines and `#` comment lines.
-- **Stop parsing** at a line starting with `# Partition spec` or `# Partition information` — everything after is the partition spec, not columns.
-
----
-
-## Statement templates
-
-### Time window (applies to every query below)
+## Time window (applies to every query below)
 
 The failed/good tables are partitioned by `load_tstamp_day`, so bounding `load_tstamp` prunes
 partitions and scans far less data. Ask the user in Phase 1 **when the failures occurred** and
@@ -117,7 +30,9 @@ Use the **same** window in every query (identification, inspection, test, INSERT
 pre-check) so the identified, validated, and recovered sets match. The bundled generator accepts
 either form (`LOAD_TSTAMP_START`/`LOAD_TSTAMP_END`, or `DAYS_LOOKBACK`).
 
-### Identification query — summary (Step 1, default)
+---
+
+## Identification query — summary (Phase 2, default)
 
 Lead with this: one row per schema × app_id × failure type with volumes and time span. Best for
 surveying what's failing without dumping every row, especially over a wide window.
@@ -140,7 +55,7 @@ GROUP BY
 ORDER BY failed_events DESC
 ```
 
-### Identification query — row-level drill-in (after a schema is chosen)
+## Identification query — row-level drill-in (after a schema is chosen)
 
 Once the user picks a failing schema, inspect *why* it's failing for that schema + app_id. Scoped,
 so it returns a handful of rows, not a flood.
@@ -157,7 +72,14 @@ WHERE load_tstamp > current_timestamp - interval '<days>' day   -- or a bounded 
 LIMIT 10
 ```
 
-### Payload inspection query (Step 2)
+---
+
+## Payload inspection query (Phase 3)
+
+Expands the failure context with `UNNEST` so the user sees the real value behind each field, read
+with `json_extract_scalar` (Athena does not support deep nested dot notation on the array — you must
+`UNNEST` first). Read the results for **how each value is encoded**, not just its content, and note
+the exact field names.
 
 ```sql
 SELECT
@@ -171,7 +93,9 @@ WHERE load_tstamp > current_timestamp - interval '<days>' day
 LIMIT 10
 ```
 
-### Field profiling & coercibility confirmation (Step 2.5 — gate before building the expression)
+---
+
+## Field profiling & coercibility confirmation (Phase 3.5 — gate before building the expression)
 
 Before writing any recovery expression, profile **every field you'll recover** across **all** failed
 rows, to confirm the whole population is recoverable by one expression. This query can't error
@@ -199,8 +123,15 @@ FROM prep;
 Decide, per field: any `_uncoercible > 0` → **stop, list the offending rows, and partition/scope**. Any
 `_absent > 0` → required→partition, optional→NULL. Otherwise build the expression —
 `CAST(json_extract_scalar(...) AS <type>)` runs clean because profiling confirmed every value coerces.
+(Full decision table: `reference/column-classification-and-validation.md`.)
 
-### Recovery expression pattern (Step 3) — build & confirm with the user
+---
+
+## Recovery expression pattern (Phase 4) — build & confirm with the user
+
+Reconstruct the repaired entity as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`, mapping each
+`json_extract_scalar(failure_data, '$.field')` to its target field/type in the **same order** as the
+good-table struct. `_schema_version` is the first field.
 
 ```sql
 CAST(
@@ -218,7 +149,9 @@ Entity columns must be constructed as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`
 The `ARRAY<STRUCT<...>>` form in DESCRIBE output is DDL-only and invalid in a query.
 Do **not** append `AS <column_name>` here — the generator adds it.
 
-### Test SELECT + type validation (run and validate before the INSERT)
+---
+
+## Test SELECT + type validation (Phase 4 — run and validate before the INSERT)
 
 Emit this so the user can prove the reconstructed column is correct before any INSERT is generated.
 It wraps the recovery expression in the CTEs and adds `typeof(...)` so the exact Athena type can be
@@ -246,27 +179,17 @@ FROM unnested
 
 `typeof()` returns the type as a string, e.g.
 `array(row(_schema_version varchar, numbers bigint, true_or_false boolean, words varchar))`.
+Compare it field-for-field against the good-table column type (validation checklist:
+`reference/column-classification-and-validation.md`).
 
-### Validation checklist (the gate)
+---
 
-Confirm all of these against the pasted test output before generating the INSERT:
+## Full INSERT template (Phase 7 — the generator emits this)
 
-1. **Type match (decisive).** `recovered_type` must equal the good-table column's type after
-   Hive→Athena conversion — same field **names, types, and order**. Athena inserts positionally into
-   a struct, so order matters. If `typeof` matches the target column type, the INSERT will type-check.
-2. **Row count** equals the failed-event count for this schema + app_id (from the identification query).
-3. **No unexpected nulls** in `recovered` — a null usually means a wrong `$.json_path` or a cast that
-   silently returned null. Investigate before proceeding.
-4. **Values are corrected** — the repaired field holds the fixed value (e.g. a proper integer, not a
-   quoted string), and pass-through fields are intact.
-
-If any check fails, fix the recovery expression and re-run the test SELECT. Only generate the INSERT
-once the type matches and values are correct.
-
-### Full INSERT template
-
-Escape single quotes in `app_id` and the schema URI as `''`. Place any `--` comment
-on a **leading** line of a SELECT expression, never trailing (a trailing comment eats
+Prefer the bundled `scripts/generate_insert.py`, which builds the wide column list deterministically
+from both DESCRIBE outputs. This is the shape it produces (and the fallback to build inline when code
+execution is unavailable). Escape single quotes in `app_id` and the schema URI as `''`. Place any
+`--` comment on a **leading** line of a SELECT expression, never trailing (a trailing comment eats
 the comma that joins expressions).
 
 ```sql
@@ -293,13 +216,20 @@ SELECT
 FROM unnested;
 ```
 
+- `<good_database>.<good_table>` is the **staging** table (staging path) or the **good** table
+  (direct path); columns are always classified from the **good-table** DESCRIBE. Set
+  `TARGET_DATABASE`/`TARGET_TABLE` on the generator for the staging path.
+- The recovery column carries the validated Phase-4 expression; the failure column is excluded
+  entirely; `load_tstamp` is refreshed to `current_timestamp`.
+- How each column is classified (pass-through vs null-cast, Hive→Athena type conversion,
+  reserved-word quoting): `reference/column-classification-and-validation.md`.
+
 ---
 
-## Staging-table patterns (staging write path)
+## Staging-table patterns (Phase 6 / Phase 8 — staging write path)
 
-When the user chooses to write to a staging table first, use these. The staging table mirrors the
-good table's schema exactly, so the recovery INSERT (retargeted to staging) and the final promote
-both line up positionally.
+The staging table mirrors the good table's schema exactly, so the recovery INSERT (retargeted to
+staging) and the final promote both line up positionally.
 
 ### 1. Create an empty staging table that mirrors the good table
 
@@ -317,7 +247,7 @@ AS SELECT * FROM <good_database>.<good_table> WHERE 1 = 0;
 
 ### 2. Recovery INSERT into staging
 
-Same generated INSERT, but targeting the staging table — run the generator with
+Same generated INSERT (above), but targeting the staging table — run the generator with
 `TARGET_DATABASE`/`TARGET_TABLE` set to the staging table (column classification still comes from
 the good-table DESCRIBE).
 
@@ -346,9 +276,17 @@ SELECT * FROM <staging_database>.<staging_table>;
 DROP TABLE <staging_database>.<staging_table>;
 ```
 
+### Direct-path time travel (compare before/after)
+
+Iceberg time travel compares the good table before/after a direct-path INSERT:
+
+```sql
+SELECT COUNT(*) FROM <good_db>.<good_table> FOR SYSTEM_TIME AS OF TIMESTAMP '2024-01-15 12:00:00'
+```
+
 ---
 
-## Duplicate pre-check (run before the INSERT)
+## Duplicate pre-check (Phase 2 / Phase 8 — run before the INSERT)
 
 Confirms the events haven't already been recovered. The events being recovered only exist because
 they failed validation, so any of their `event_id`s already present in the good table means a prior
@@ -377,42 +315,4 @@ WHERE g.event_id IN (
       AND app_id = '<app_id>'
       AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
 );
-```
-
----
-
-## Canonical atomic column set
-
-A column is "atomic" (pass through by name, never null-cast) if its name is in this set.
-Anything else is a custom `contexts_*` / `unstruct_event_*` column and follows the
-pass-through-vs-null rule.
-
-```
-app_id platform etl_tstamp collector_tstamp dvce_created_tstamp
-event event_id txn_id name_tracker v_tracker v_collector v_etl
-user_id user_ipaddress user_fingerprint domain_userid domain_sessionidx
-network_userid geo_country geo_region geo_city geo_zipcode
-geo_latitude geo_longitude geo_region_name ip_isp ip_organization
-ip_domain ip_netspeed page_url page_title page_referrer
-page_urlscheme page_urlhost page_urlport page_urlpath page_urlquery
-page_urlfragment refr_urlscheme refr_urlhost refr_urlport refr_urlpath
-refr_urlquery refr_urlfragment refr_medium refr_source refr_term
-mkt_medium mkt_source mkt_term mkt_content mkt_campaign
-se_category se_action se_label se_property se_value
-tr_orderid tr_affiliation tr_total tr_tax tr_shipping
-tr_city tr_state tr_country ti_orderid ti_sku ti_name
-ti_category ti_price ti_quantity pp_xoffset_min pp_xoffset_max
-pp_yoffset_min pp_yoffset_max useragent br_name br_family
-br_version br_type br_renderengine br_lang br_features_pdf
-br_features_flash br_features_java br_features_director
-br_features_quicktime br_features_realplayer br_features_windowsmedia
-br_features_gears br_features_silverlight br_cookies br_colordepth
-br_viewwidth br_viewheight os_name os_family os_manufacturer
-os_timezone dvce_type dvce_ismobile dvce_screenwidth dvce_screenheight
-doc_charset doc_width doc_height tr_currency tr_total_base
-tr_tax_base tr_shipping_base ti_currency ti_price_base base_currency
-geo_timezone mkt_clickid mkt_network etl_tags dvce_sent_tstamp
-refr_domain_userid refr_dvce_tstamp domain_sessionid derived_tstamp
-event_vendor event_name event_format event_version event_fingerprint
-true_tstamp load_tstamp
 ```
