@@ -166,6 +166,36 @@ back to reading the field types and `required` list from the **Iglu schema JSON*
 it or its URL. Do not infer types from the failed payload alone (the values are exactly what failed
 validation).
 
+### Field profiling & coercibility confirmation (Step 2.5 — gate before building the expression)
+
+Before writing any recovery expression, profile **every field you'll recover** across **all** failed
+rows, to confirm the whole population is recoverable by one expression. This query can't error
+(`TYPEOF`, `TRY_CAST`, `COUNT_IF` tolerate any input). Add one block per field, using that field's
+**target type** (from the recovery column / a validated event) in the `TRY_CAST`:
+
+```sql
+WITH prep AS (
+    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[0]:data AS d
+    FROM <failed_database>.<failed_schema>.<failed_table>
+    WHERE <load_tstamp window>
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
+      AND app_id = '<app_id>'
+)
+SELECT
+    COUNT(*)                                                                     AS total_rows,
+    -- one block per recovered field (swap <field> and its <TARGET_TYPE>):
+    LISTAGG(DISTINCT TYPEOF(d:<field>), ',')                                     AS <field>_variant_types,
+    COUNT_IF(d:<field> IS NULL)                                                  AS <field>_absent,
+    COUNT_IF(d:<field> IS NOT NULL
+             AND TRY_CAST(d:<field>::STRING AS <TARGET_TYPE>) IS NULL)           AS <field>_uncoercible
+FROM prep;
+```
+
+Decide, per field: any `_uncoercible > 0` → the rows don't share one recovery; **stop, list the
+offending rows, and partition/scope**. Any `_absent > 0` → required→partition, optional→NULL.
+Otherwise build the expression — the `::TYPE` casts will run clean because profiling confirmed every
+value coerces. (`TRY_CAST(...::STRING AS <TYPE>)` mirrors the recovery cast without erroring.)
+
 ### Recovery expression pattern (Step 3) — build & confirm with the user
 
 Reconstruct the repaired entity as a VARIANT array of objects. `_schema_version` is **mandatory**

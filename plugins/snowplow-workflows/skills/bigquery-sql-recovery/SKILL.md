@@ -1,6 +1,6 @@
 ---
 name: bigquery-sql-recovery
-description: Recover Snowplow failed events from a BigQuery failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in BigQuery, especially events that failed on a single custom entity/context. Builds the wide INSERT itself with an INFORMATION_SCHEMA metadata query and reconstructs entities as native ARRAY<STRUCT>, matching the target column's field names, types, and order exactly (read from ground truth, never guessed).
+description: Recover Snowplow failed events from a BigQuery failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in BigQuery, especially events that failed on a single custom entity/context. Builds the wide INSERT itself with an INFORMATION_SCHEMA metadata query and reconstructs entities as native ARRAY-of-STRUCT columns, matching the target column's field names, types, and order exactly (read from ground truth, never guessed).
 ---
 
 # BigQuery failed-events recovery
@@ -51,9 +51,13 @@ a time.
   field order** must match the target column's type **exactly**. So the entity shape is always read
   from ground truth (a validated good-table row, or the recovery column's `data_type` in
   `INFORMATION_SCHEMA`) — never guessed.
-- **JSON payload.** The failure context's `data` is a `JSON` value. Read scalars out with BigQuery's
-  JSON extraction functions — `INT64(...)`, `STRING(...)`, `FLOAT64(...)`, `BOOL(...)` — which both
-  navigate and type-cast. A bad extraction raises an error when the query runs.
+- **JSON payload — profile, then pick the extractor per field.** The failure context's `data` is a
+  `JSON` value. A repaired value may already be the native JSON type or sent as the wrong one, so a
+  **profiling step** (Phase 3.5) decides per field: **strict** `INT64()/STRING()/FLOAT64()/BOOL()` where
+  the value is already native, `CAST(JSON_VALUE(...) AS <TYPE>)` where it's string-encoded or mixed,
+  and *stop & partition* where it won't coerce. Both error on a bad value (never silent-NULL), and
+  profiling guarantees they won't. **Don't** use the lenient `LAX_` accessors (they hide failures as
+  NULL). See `reference/sql-reference.md`.
 - **Array access.** The failure context is a native array; `[0]` (zero-based direct index) reads its
   single element, e.g. `contexts_com_snowplowanalytics_snowplow_failure_1[0].data`. Use
   `[SAFE_OFFSET(0)]` if you want NULL instead of an error on an empty array.
@@ -104,7 +108,8 @@ window. Help them read the pasted results:
 Then have the user **pick one failing schema to recover** and confirm its Iglu URI and app_id. Now
 run the **row-level drill-in query** (reference: "row-level drill-in"), scoped to that schema +
 app_id, to read the `errors`/`data` and form a first hypothesis of the fix (wrong type, missing,
-renamed field) — this guides the payload inspection and recovery expression next.
+renamed field, **or a schema-resolution failure** — see "Recovering a ResolutionError" below) — this
+guides the payload inspection and recovery expression next.
 
 **Offer the duplicate pre-check now (optional).** As soon as the schema is chosen, ask whether they
 want to confirm these events haven't already been recovered in a past run:
@@ -117,14 +122,78 @@ set for this schema + app_id + time window). Expect **0** — if it returns > 0,
 `event_id`s and flag that recovering again would duplicate them, then decide with the user whether
 to stop, narrow scope, or proceed knowingly. If they skip, note it and move on.
 
+**Ask for the schema JSON (custom schemas).** Once the failing schema is chosen, if it's a **custom
+schema** — your own vendor, not a Snowplow / Iglu Central one — ask the user to paste the **Iglu JSON
+schema** for it (or its registry URL). This isn't strictly required (the queries you're already
+running — the recovery column's type and the Phase 3.5 profiling — ground the recovery) and it doesn't
+replace any of them; it's authoritative context the user can reasonably provide that lets you
+sanity-check field names, types, the `required` list, and enums/constraints, catch a renamed/misspelled
+field, and judge whether an un-coercible value is genuinely bad or a sign the target type is wrong.
+Treat it as extra confidence. (For Iglu Central / Snowplow schemas you can reason from the public
+schema directly.)
+
+---
+
+## Recovering a ResolutionError (schema couldn't be resolved)
+
+This flow is **not** limited to `ValidationError` cases. A **ResolutionError** means Iglu couldn't
+*resolve* (fetch) the referenced schema at all; a **ValidationError** means the schema resolved but
+the data didn't conform. Tell them apart from the `failure_type` and the `errors` content — and do
+**not** treat a ResolutionError as automatically unrecoverable.
+
+A ResolutionError **is** recoverable in-warehouse in these cases:
+
+- **Transient / misconfigured registry** — the schema was valid; Iglu was just unreachable at
+  enrichment time. The payload already conforms; reconstruct it into the correct column unchanged.
+- **Wrong URI** — a typo in the vendor/name, or a version that doesn't exist. Re-point to the
+  corrected URI, reconstruct into *that* schema's column, and adjust any fields the correct schema
+  requires (exactly as in a ValidationError recovery).
+- **Never published** — register the schema in Iglu first (outside the warehouse), then recover.
+
+Two things must be true before the INSERT can land — confirm both with the user:
+
+1. **The correct schema now resolves** — it exists in a registry (the same URI if transient, the
+   corrected URI if it was wrong, or a newly registered one).
+2. **A target column exists** in the good table for the correct schema. Loaders materialise an
+   entity's column only after a valid event of that schema has loaded, so a schema that never
+   resolved may have **no column yet**. Confirm with the Phase 4 "finding the recovery column name"
+   query run against the **corrected** schema name — a returned row is your confirmation. If none
+   comes back, the schema must load once (or the column be created) before recovery can land.
+
+**Key subtlety — filter on the recorded URI, build into the corrected one:**
+
+- **Filter** the failed rows by the schema URI **as stored in the failure context**
+  (`contexts_com_snowplowanalytics_snowplow_failure_1[0].schema`) — the original, possibly-wrong URI
+  the event actually carried. Every WHERE predicate (identification drill-in, payload, test `prep`,
+  INSERT `prep`, duplicate pre-check) must match on that recorded value.
+- **Derive** the target column and `_schema_version` from the **corrected** URI.
+- When the two are the same (transient), nothing else changes. When they differ (typo / version
+  fix), keep the predicates on the recorded URI but reconstruct into the corrected column/version.
+
+**Only bail out** when the schema genuinely can't be made to resolve (doesn't exist and won't be
+registered) or no target column can exist — then it isn't a data fix. Enrichment failures and
+adapter failures remain out of scope regardless.
+
 ---
 
 ## Phase 3 — Inspect the payload and confirm the fix
 
-Generate the **payload inspection query** (`UNNEST` the failure array + JSON navigation) so the user
+Generate the **payload inspection query** (`UNNEST` the failure array + `JSON_VALUE`) so the user
 sees the real values behind each field for the chosen schema. From the results, confirm the exact
-field names, their values, and the intended target types — i.e. exactly how each failed field maps
-into the repaired entity. This mapping drives the recovery expression in Phase 4.
+field names, their values, and **how each value is encoded** (a quoted number is a string-encoded
+int). Expect failures to be **compound** — one schema's failed events can combine a renamed/missing
+field *and* a wrong type.
+
+---
+
+## Phase 3.5 — Profile & confirm coercibility (gate — do not skip)
+
+Before building any recovery expression, give the user the reference's **field profiling query** — it
+can't error — to learn, per field across *all* failed rows, the JSON types present and whether every
+value coerces to its target type. Use it to (a) confirm the whole population shares **one** recovery,
+and (b) pick the extractor per field: **strict** where the value is native, **`CAST(JSON_VALUE(...) AS
+<TYPE>)`** where string-encoded/mixed, and **stop & partition** where anything won't coerce (see the
+reference's decision list). Never fall back to `LAX_`.
 
 ---
 
@@ -147,7 +216,8 @@ guesses:
 The field values come from the Phase 3 payload inspection (also a query), so both sides of the
 mapping are grounded in real output. Then build the **recovery expression**: an array of one struct,
 `[STRUCT('<ver>' AS _schema_version, <path> AS <field>, ...)]`, mapping each
-`contexts_..._failure_1[0].data.<field>` to its target field via the right JSON extraction function.
+`contexts_..._failure_1[0].data.<field>` to its target field via the extractor Phase 3.5 selected for
+that field (a strict accessor, or `CAST(JSON_VALUE(...) AS <TYPE>)`).
 
 **The correct field names, types, and order are defined by the Iglu schema (and materialised in the
 column type) — they are not yours to decide or guess.** If there is any doubt, resolve it from ground
@@ -165,9 +235,10 @@ Only once the intended shape is grounded this way do you write the extraction ca
 
 - **`_schema_version` is mandatory** for the BigQuery Streaming Loader — always include it as the
   first struct field, set to the corrected major-compatible version.
-- Fields are extracted+cast with JSON functions (`INT64(...)`, `STRING(...)`, `FLOAT64(...)`,
-  `BOOL(...)`). A bad extraction raises an error when the query runs, so a test SELECT that runs
-  clean already proves the casts hold.
+- Fields are extracted with the per-field extractor chosen in Phase 3.5 — a **strict** accessor
+  (`INT64()/STRING()/...`) where the value is native, or `CAST(JSON_VALUE(...) AS <TYPE>)` where it's
+  string-encoded/mixed. Both error on a bad value (never silent-NULL); profiling already ruled those
+  out, so a test SELECT that runs clean proves the casts hold.
 
 Emit a **test SELECT** (per the reference's test-SELECT pattern) that returns, for each row:
 `event_id` and the reconstructed column. **Do not generate the INSERT yet.** Ask the user to run the
@@ -181,8 +252,9 @@ table.
 When the user pastes the test output, validate that the reconstructed column is correct, per the
 reference's validation checklist. In short, confirm:
 
-- **The query ran clean** — every JSON extraction/cast succeeded (BigQuery errors on a bad cast
-  rather than silently continuing), so a successful run is strong evidence the types are right.
+- **Profiling confirmed + the query ran clean** — Phase 3.5 already proved every value coerces, and
+  the chosen extractors (strict or `CAST(JSON_VALUE(...))`) error on a bad cast rather than silently
+  continuing, so a successful run is strong evidence the types are right.
 - **Struct shape matches the target** — the reconstructed struct's field names, types, and order
   match the recovery column's `data_type` exactly (this is what the positional INSERT will require),
   and `_schema_version` is present as the first field.

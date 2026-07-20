@@ -209,6 +209,36 @@ the good table has **no** validated events for this entity yet (e.g. a brand-new
 **Iglu schema JSON** — ask the user for it or its URL. Do not infer types from the failed payload
 alone (those values are exactly what failed validation).
 
+### Field profiling & coercibility confirmation (Step 2.5 — gate before building the expression)
+
+Before writing any recovery expression, profile **every field you'll recover** across **all** failed
+rows. This is also how you pre-empt Databricks' silent-NULL trap (a wrong path or un-castable value
+becomes NULL, not an error) — confirm coercibility up front instead of discovering NULLs after the
+write. The query can't error (`get_json_object`, `try_cast`, `count_if`). Add one block per field,
+using that field's **target type** (from the recovery column's `full_data_type`) in the `try_cast`:
+
+```sql
+WITH prep AS (
+    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[0].data AS d
+    FROM <failed_catalog>.<failed_schema>.<failed_table>
+    WHERE <load_tstamp window>
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND app_id = '<app_id>'
+)
+SELECT
+    COUNT(*)                                                                          AS total_rows,
+    -- one block per recovered field (swap <field> and its <TARGET_TYPE>):
+    count_if(get_json_object(d, '$.<field>') IS NULL)                                 AS <field>_absent,
+    count_if(get_json_object(d, '$.<field>') IS NOT NULL
+             AND try_cast(get_json_object(d, '$.<field>') AS <TARGET_TYPE>) IS NULL)  AS <field>_uncoercible
+FROM prep;
+```
+
+Decide, per field: any `_uncoercible > 0` → **stop, list the offending rows, and partition/scope**. Any
+`_absent > 0` → required→partition, optional→NULL. Otherwise build the expression —
+`CAST(GET_JSON_OBJECT(...) AS <type>)` will produce a value for every row (no silent NULLs) because
+profiling confirmed coercibility.
+
 ### Recovery expression pattern (Step 3) — build & confirm with the user
 
 Reconstruct the repaired entity as an array of one struct. `_schema_version` is **mandatory** (first

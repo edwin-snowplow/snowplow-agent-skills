@@ -21,16 +21,24 @@ native array/struct/JSON syntax:
   is normally a single-element array, so `contexts_..._failure_1[0]` is the failure struct. Use
   `[SAFE_OFFSET(0)]` to get NULL instead of an error on an empty array.
 - **`.field`** — navigate into a struct field, e.g. `...failure_1[0].data`, `...failure_1[0].schema`.
-- **JSON extraction** — `data` is `JSON`. Read a typed scalar out of it with the extraction
-  functions, which navigate **and** cast in one call:
-  - `INT64(...failure_1[0].data.user_id)` → INT64
-  - `STRING(...failure_1[0].data.user_name)` → STRING
-  - `FLOAT64(...)`, `BOOL(...)` for the other scalar types
-  - `JSON_VALUE(...)` returns the value as STRING; `JSON_QUERY(...)` returns a JSON subtree;
-    `JSON_QUERY_ARRAY(...)` returns an array of JSON for a JSON array field.
+- **JSON extraction — the extractor is chosen *per field from profiling*, not fixed.** `data` is
+  `JSON`. Two ways to read a scalar:
+  - **strict accessor** — `INT64(...)`, `STRING(...)`, `FLOAT64(...)`, `BOOL(...)` — reads the native
+    JSON type and **errors** if the value isn't that type;
+  - **coerce** — `CAST(JSON_VALUE(...) AS <TYPE>)` — pulls the scalar out as a string and casts it, so
+    it handles a value sent as the *wrong* JSON type (e.g. an int sent as `"5"`), still erroring on a
+    genuinely un-castable value;
+  - `JSON_VALUE(...)` alone returns any scalar as STRING (use for read-only inspection);
+    `JSON_QUERY(...)` / `JSON_QUERY_ARRAY(...)` for JSON subtrees / arrays.
 
-  A failed extraction/cast (e.g. `INT64()` on a non-numeric JSON value) raises an error at query
-  time — so a query that runs clean has already proved the casts hold.
+  **Don't guess which — profile first.** The value you're repairing was often sent as the wrong JSON
+  type, so `INT64()` on a string-encoded `"5"` errors while `CAST(JSON_VALUE(...) AS INT64)` coerces
+  it. Run the **field profiling query** (see "Field profiling & coercibility confirmation" below) to
+  learn, per field across *all* failed rows, which JSON types are present and whether every value
+  coerces to the target type; then pick the strictest extractor the data supports (see the decision
+  list there). Because both the strict accessors and `CAST` error on a bad value — and profiling has
+  confirmed none exist — a clean test SELECT genuinely proves the casts hold. **Avoid the lenient
+  `LAX_` accessors:** they swallow bad values into NULL silently, hiding an incomplete recovery.
 
 Fields of each failure struct:
 
@@ -152,14 +160,15 @@ LIMIT 10;
 
 ### Payload inspection query (Step 2)
 
-Expands the failure context with `UNNEST` so the user sees the real value behind each field. Read
-`data` scalars with the JSON extraction functions.
+Expands the failure context with `UNNEST` so the user sees the real value behind each field. Render
+each scalar with `JSON_VALUE` (not the strict `STRING()` accessor — it errors on a non-string JSON
+value such as a number or boolean).
 
 ```sql
 SELECT
-    f.schema                    AS failing_schema,
-    STRING(f.data.field1)       AS field1,
-    STRING(f.data.field2)       AS field2
+    f.schema                        AS failing_schema,
+    JSON_VALUE(f.data.field1)       AS field1,
+    JSON_VALUE(f.data.field2)       AS field2
 FROM `<failed_project>.<failed_dataset>.<failed_table>`,
      UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
@@ -168,8 +177,9 @@ WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
 LIMIT 10;
 ```
 
-(`STRING(...)` is used here just to render every field readably; the real target types come from the
-recovery column's `data_type`.)
+Read the results for **how each value is encoded**, not just its content: a number shown in quotes
+(`"5"`) is a *string-encoded* int. This `LIMIT 10` sample just orients you — the profiling query
+below quantifies it across all rows. The real target types come from the recovery column's `data_type`.
 
 ### Inspect a validated event (ground the target shape in the schema)
 
@@ -192,19 +202,65 @@ good table has **no** validated events for this entity yet (e.g. a brand-new sch
 schema JSON** — ask the user for it or its URL. Do not infer types from the failed payload alone
 (those values are exactly what failed validation).
 
+### Field profiling & coercibility confirmation (Step 2.5 — gate before building the expression)
+
+Before writing any recovery expression, profile **every field you'll recover** across **all** failed
+rows, so you pick the right extractor per field and confirm the whole population is recoverable by one
+expression. This query can never error (`JSON_TYPE`, `JSON_VALUE`, `SAFE_CAST`, `COUNTIF` tolerate any
+input), so it is always safe to suggest. Add one block per field, using that field's **target type**
+(from the recovery column's `data_type`, see "Finding the recovery column name") in the `SAFE_CAST`:
+
+```sql
+WITH prep AS (
+    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[0].data AS d
+    FROM `<failed_project>.<failed_dataset>.<failed_table>`
+    WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
+      AND app_id = '<app_id>'
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+)
+SELECT
+    COUNT(*)                                                                            AS total_rows,
+    -- one block per recovered field (swap <field> and its <TARGET_TYPE>, e.g. INT64):
+    STRING_AGG(DISTINCT JSON_TYPE(d.<field>))                                           AS <field>_json_types,
+    COUNTIF(JSON_TYPE(d.<field>) IS NULL)                                               AS <field>_absent,
+    COUNTIF(JSON_TYPE(d.<field>) NOT IN ('null')
+            AND SAFE_CAST(JSON_VALUE(d.<field>) AS <TARGET_TYPE>) IS NULL)              AS <field>_uncoercible
+FROM prep;
+```
+
+Read the result and decide **per field**, in order:
+
+1. **Any `_uncoercible > 0`** → the failed rows do **not** share one recovery; some values can't become
+   the target type. Do **not** suggest a recovery expression yet — list the offending rows and
+   partition/narrow scope with the user first.
+2. **Any `_absent > 0`** → the field is missing from some rows. If the schema requires it, partition
+   those rows off; if optional, the extractor yields NULL for them (acceptable).
+3. Otherwise, per field: `_json_types` is exactly the **native** type (`number` for INT64/FLOAT64,
+   `string` for STRING, `boolean` for BOOL) → use the **strict** accessor; a **wrong/mixed** encoding
+   (e.g. `string`, or `number,string`) with `_uncoercible = 0` → use **`CAST(JSON_VALUE(...) AS <TYPE>)`**.
+
+Only once every field lands on `strict` or `CAST` with `_uncoercible = 0` do you build the expression.
+
 ### Recovery expression pattern (Step 3) — build & confirm with the user
 
 Reconstruct the repaired entity as an array of one struct. `_schema_version` is **mandatory** (first
 field) for the BigQuery Streaming Loader. Field names, types, and order must match the recovery
-column's `data_type` exactly. Extract each field from the JSON `data` with the right function.
+column's `data_type` exactly. Extract **each field with the extractor profiling (above) selected for
+it** — strict where the value is already the native JSON type, `CAST(JSON_VALUE(...) AS <TYPE>)` where
+it's string-encoded or mixed:
 
 ```sql
 [STRUCT(
-    '1-0-0'                                                                      AS _schema_version,  -- corrected version
-    INT64(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_id)     AS user_id,
-    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_name)  AS user_name
+    '1-0-0'                                                                                       AS _schema_version,  -- corrected version
+    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_id) AS INT64)  AS user_id,     -- profiled as string/mixed → coerce
+    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_name)                   AS user_name    -- profiled as native string → strict
 )]
 ```
+
+Both the strict accessors and `CAST(JSON_VALUE(...))` **error** on a value they can't convert — but
+profiling has already confirmed every value coerces, so the expression is guaranteed to run clean.
+**Do not use the lenient `LAX_` accessors:** they swallow an un-coercible value into NULL silently,
+writing an incomplete recovery into the good table without erroring.
 
 `ARRAY(SELECT AS STRUCT ...)` is an equivalent form, but the array literal `[STRUCT(...)]` is
 simplest for a single element. Do **not** append `AS <column_name>` here — the generator adds it.
@@ -231,16 +287,20 @@ FROM prep
 LIMIT 20;
 ```
 
-Because BigQuery raises an error on a failed extraction/cast, a test SELECT that runs at all already
-proves the casts hold. BigQuery has no `TYPEOF`; validate the struct **shape** by comparing the
-reconstructed fields against the recovery column's `data_type`, and eyeball the values.
+Because profiling (Step 2.5) already confirmed every value coerces, and both the strict accessors and
+`CAST(JSON_VALUE(...))` raise an error on a bad value, a test SELECT that runs at all already proves
+the casts hold. BigQuery has no `TYPEOF`; validate the struct **shape** by comparing the reconstructed
+fields against the recovery column's `data_type`, and eyeball the values.
 
 ### Validation checklist (the gate)
 
 Confirm all of these against the pasted test output before generating the INSERT:
 
-1. **The query ran clean (decisive).** Every extraction/cast succeeded — BigQuery errors on a bad
-   cast rather than silently returning null, so a successful run is strong evidence the types match.
+1. **Profiling confirmed + the query ran clean (decisive).** Step 2.5 already proved every value
+   coerces to its target type, and the chosen extractors (strict or `CAST(JSON_VALUE(...))`) error on a
+   bad value rather than silently returning null — so a successful run is strong evidence the types
+   match. (A NULL in a *required* field means a wrong JSON path; an *optional* field may be NULL where
+   the value was absent — profiling's `_absent` count told you which.)
 2. **Struct shape matches the target** — the reconstructed struct's field names, types, and order
    match the recovery column's `data_type` exactly (this is what the positional INSERT requires), and
    `_schema_version` is present as the first field.

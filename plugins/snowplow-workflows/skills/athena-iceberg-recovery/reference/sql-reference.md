@@ -171,6 +171,35 @@ WHERE load_tstamp > current_timestamp - interval '<days>' day
 LIMIT 10
 ```
 
+### Field profiling & coercibility confirmation (Step 2.5 — gate before building the expression)
+
+Before writing any recovery expression, profile **every field you'll recover** across **all** failed
+rows, to confirm the whole population is recoverable by one expression. This query can't error
+(`json_extract_scalar`, `TRY_CAST`, `count_if`). `<failure_data>` is the payload JSON string,
+`contexts_com_snowplowanalytics_snowplow_failure_1[1].data`. Add one block per field, using that
+field's **target type** (from the good-table `DESCRIBE`) in the `TRY_CAST`:
+
+```sql
+WITH prep AS (
+    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[1].data AS d
+    FROM <failed_database>.<failed_table>
+    WHERE <load_tstamp window>
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
+      AND app_id = '<app_id>'
+)
+SELECT
+    COUNT(*)                                                                              AS total_rows,
+    -- one block per recovered field (swap <field> and its <TARGET_TYPE>):
+    count_if(json_extract_scalar(d, '$.<field>') IS NULL)                                 AS <field>_absent,
+    count_if(json_extract_scalar(d, '$.<field>') IS NOT NULL
+             AND TRY_CAST(json_extract_scalar(d, '$.<field>') AS <TARGET_TYPE>) IS NULL)  AS <field>_uncoercible
+FROM prep;
+```
+
+Decide, per field: any `_uncoercible > 0` → **stop, list the offending rows, and partition/scope**. Any
+`_absent > 0` → required→partition, optional→NULL. Otherwise build the expression —
+`CAST(json_extract_scalar(...) AS <type>)` runs clean because profiling confirmed every value coerces.
+
 ### Recovery expression pattern (Step 3) — build & confirm with the user
 
 ```sql

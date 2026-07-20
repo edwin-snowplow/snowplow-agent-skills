@@ -99,7 +99,8 @@ window. Help them read the pasted results:
 Then have the user **pick one failing schema to recover** and confirm its Iglu URI and app_id. Now
 run the **row-level drill-in query** (reference: "row-level drill-in"), scoped to that schema +
 app_id, to read the `errors`/`data` and form a first hypothesis of the fix (wrong type, missing,
-renamed field) — this guides the payload inspection and recovery expression next.
+renamed field, **or a schema-resolution failure** — see "Recovering a ResolutionError" below) — this
+guides the payload inspection and recovery expression next.
 
 **Offer the duplicate pre-check now (optional).** As soon as the schema is chosen, ask whether they
 want to confirm these events haven't already been recovered in a past run:
@@ -112,6 +113,58 @@ set for this schema + app_id + time window). Expect **0** — if it returns > 0,
 `event_id`s and flag that recovering again would duplicate them, then decide with the user whether
 to stop, narrow scope, or proceed knowingly. If they skip, note it and move on.
 
+**Ask for the schema JSON (custom schemas).** Once the failing schema is chosen, if it's a **custom
+schema** — your own vendor, not a Snowplow / Iglu Central one — ask the user to paste the **Iglu JSON
+schema** for it (or its registry URL). This isn't strictly required (the queries you're already
+running — the recovery column's type and the Phase 3.5 profiling — ground the recovery) and it doesn't
+replace any of them; it's authoritative context the user can reasonably provide that lets you
+sanity-check field names, types, the `required` list, and enums/constraints, catch a renamed/misspelled
+field, and judge whether an un-coercible value is genuinely bad or a sign the target type is wrong.
+Treat it as extra confidence. (For Iglu Central / Snowplow schemas you can reason from the public
+schema directly.)
+
+---
+
+## Recovering a ResolutionError (schema couldn't be resolved)
+
+This flow is **not** limited to `ValidationError` cases. A **ResolutionError** means Iglu couldn't
+*resolve* (fetch) the referenced schema at all; a **ValidationError** means the schema resolved but
+the data didn't conform. Tell them apart from the `failure_type` and the `errors` content — and do
+**not** treat a ResolutionError as automatically unrecoverable.
+
+A ResolutionError **is** recoverable in-warehouse in these cases:
+
+- **Transient / misconfigured registry** — the schema was valid; Iglu was just unreachable at
+  enrichment time. The payload already conforms; reconstruct it into the correct column unchanged.
+- **Wrong URI** — a typo in the vendor/name, or a version that doesn't exist. Re-point to the
+  corrected URI, reconstruct into *that* schema's column, and adjust any fields the correct schema
+  requires (exactly as in a ValidationError recovery).
+- **Never published** — register the schema in Iglu first (outside the warehouse), then recover.
+
+Two things must be true before the INSERT can land — confirm both with the user:
+
+1. **The correct schema now resolves** — it exists in a registry (the same URI if transient, the
+   corrected URI if it was wrong, or a newly registered one).
+2. **A target column exists** in the good table for the correct schema. Loaders materialise an
+   entity's column only after a valid event of that schema has loaded, so a schema that never
+   resolved may have **no column yet**. Confirm with the Phase 4 "finding the recovery column name"
+   query run against the **corrected** schema name — a returned row is your confirmation. If none
+   comes back, the schema must load once (or the column be created) before recovery can land.
+
+**Key subtlety — filter on the recorded URI, build into the corrected one:**
+
+- **Filter** the failed rows by the schema URI **as stored in the failure context**
+  (`contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema`) — the original, possibly-wrong URI
+  the event actually carried. Every WHERE predicate (identification drill-in, payload, test `prep`,
+  INSERT `prep`, duplicate pre-check) must match on that recorded value.
+- **Derive** the target column and `_schema_version` from the **corrected** URI.
+- When the two are the same (transient), nothing else changes. When they differ (typo / version
+  fix), keep the predicates on the recorded URI but reconstruct into the corrected column/version.
+
+**Only bail out** when the schema genuinely can't be made to resolve (doesn't exist and won't be
+registered) or no target column can exist — then it isn't a data fix. Enrichment failures and
+adapter failures remain out of scope regardless.
+
 ---
 
 ## Phase 3 — Inspect the payload and confirm the fix
@@ -120,6 +173,22 @@ Generate the **payload inspection query** (`LATERAL FLATTEN` + `:` navigation) s
 real values behind each field for the chosen schema. From the results, confirm the exact field
 names, their values, and the intended target types — i.e. exactly how each failed field maps into
 the repaired entity. This mapping drives the recovery expression in Phase 4.
+
+---
+
+## Phase 3.5 — Profile & confirm coercibility (gate — do not skip)
+
+Before building any recovery expression, give the user the reference's **field profiling query** — it
+can't error (`TYPEOF`, `TRY_CAST`) — to learn, per field across *all* failed rows, the VARIANT types
+present and whether every value casts to its target type. Use it to confirm the **whole population
+shares one recovery** before you suggest anything:
+
+- **any field `_uncoercible > 0`** → the failed rows don't share one fix (some values can't cast to the
+  target type) → **stop, list the offending rows, and partition/scope** with the user;
+- **any field `_absent > 0`** → the field is missing from some rows → if the schema requires it,
+  partition those off; if optional, the cast yields NULL for them;
+- **otherwise** → the population is uniform; build the recovery expression (Snowflake's `::TYPE` cast
+  coerces both native and string-encoded values, and profiling has confirmed none will error).
 
 ---
 
