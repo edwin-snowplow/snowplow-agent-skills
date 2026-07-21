@@ -20,12 +20,19 @@ running a query, so you always need results fed back before finalising downstrea
 - the actual **`data` field values/names** (the payload inspection query), and
 - the two tables' **column sets** (`DESCRIBE`), needed to build the INSERT column list.
 
-**Two rules that shape everything:**
+**Three rules that shape everything:**
 - **Never ask the user to confirm a fact a query could establish** — the column name, field names,
   values, schema version, whether rows already exist. If it lives in the warehouse, generate the query.
 - **The repaired entity's shape and types are defined by the Iglu schema, not chosen by you.** Read
   them from ground truth (the good-table `DESCRIBE`, a validated good-table row, or the schema JSON) —
   never guess.
+- **One step at a time — never hand over a query (or `DESCRIBE`) you'd expect the user to edit.** Emit
+  a single query (or one tightly-scoped step), wait for the result, then use it to build the next
+  step. When a step needs a value another step establishes — the recovery column name, a field's type
+  from the `DESCRIBE` — get that first and substitute the real value **yourself**. Never emit SQL
+  containing a guessed or placeholder value with a "swap this in if it differs" note, never batch a
+  query together with the one whose output it depends on, and never ask the user to edit the SQL you
+  provide.
 
 One run recovers **one failing schema** for **one app_id**. If the user has several, do them one at a
 time.
@@ -143,14 +150,18 @@ Never use `TRY_CAST` in the recovery expression itself. Decision table:
 `reference/column-classification-and-validation.md`.
 
 ### Phase 4 — Build & emit the test SELECT
-Get the target entity's exact field names, types, and **order** from the **good-table `DESCRIBE`** (ask
-the user to paste `DESCRIBE <good_database>.<good_table>` — don't re-ask for the name). Build the
-**recovery expression** as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))` (never the DDL
-`ARRAY<STRUCT<...>>`), mapping each `json_extract_scalar(failure_data, '$.field')` to its target
-field/type in the same order as the good-table struct, `_schema_version` first. Ground any doubt per
-`reference/failure-context.md`; if the entity isn't in the DESCRIBE yet (brand-new schema), fall back
-to the Iglu schema JSON. Emit the **test SELECT** (event_id + reconstructed column + `typeof(...)`).
-**Do not generate the INSERT yet** — have the user run it and paste output back.
+Do these **in order, one step at a time** — never build the expression from a guessed column name or
+field type:
+1. Ask the user to paste the **good-table `DESCRIBE`** (`DESCRIBE <good_database>.<good_table>` —
+   don't re-ask for the name). From it, read the exact recovery column and its `ROW(...)` field names,
+   types, and **order**. If the entity isn't in the DESCRIBE yet (brand-new schema), fall back to the
+   Iglu schema JSON.
+2. Only now build the **recovery expression** as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))` (never the
+   DDL `ARRAY<STRUCT<...>>`), mapping each `json_extract_scalar(failure_data, '$.field')` to its target
+   field/type in the good-table struct's order, `_schema_version` first (`reference/failure-context.md`).
+
+Emit the **test SELECT** (event_id + reconstructed column + `typeof(...)`). **Do not generate the
+INSERT yet** — have the user run it and paste output back.
 
 ### Phase 5 — Validate (gate — do not skip)
 Check the pasted output against the validation gate in

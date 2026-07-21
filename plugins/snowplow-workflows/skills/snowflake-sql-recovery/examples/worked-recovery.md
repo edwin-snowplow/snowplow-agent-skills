@@ -74,9 +74,10 @@ ARRAY_CONSTRUCT(
 )
 ```
 
-The test SELECT wraps this over the failed rows, adding `TYPEOF(...)` on the reconstructed fields.
-Because profiling already proved every value coerces, and Snowflake errors on a bad `::TYPE` cast, a
-clean run *is* proof here. Output spot-check:
+The test SELECT builds `recovered` in a CTE, then reads its fields back with
+`TYPEOF(recovered[0]:<field>)` in the outer query — `TYPEOF()` needs a VARIANT, so it can't wrap the
+`::TYPE` casts directly. Because profiling already proved every value coerces, and Snowflake errors on
+a bad `::TYPE` cast, a clean run *is* proof here. Output spot-check:
 
 | event_id | recovered | user_id_type | account_age_days_type |
 |---|---|---|---|

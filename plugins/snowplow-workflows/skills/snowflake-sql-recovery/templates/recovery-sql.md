@@ -197,6 +197,12 @@ quote** (`'` → `''`).
 
 Emit this so the user can prove the reconstructed column is correct before any INSERT is generated.
 
+**Build the reconstructed column in a CTE, then call `TYPEOF()` on its VARIANT fields** — do **not**
+wrap `TYPEOF()` around a `::TYPE` cast. `TYPEOF()` only accepts a VARIANT, but `::TYPE` returns a
+native scalar, so `TYPEOF(...:data:<field>::STRING)` fails with `Invalid argument types for function
+'TYPEOF'`. Compute `recovered` first, then read its fields back with `TYPEOF(recovered[0]:<field>)`
+(VARIANT navigation into the array you just built):
+
 ```sql
 WITH prep AS (
     SELECT *
@@ -204,13 +210,19 @@ WITH prep AS (
     WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
       AND app_id = '<app_id>'
       AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
+),
+recovered_rows AS (
+    SELECT
+        event_id,
+        <recovery expression> AS recovered
+    FROM prep
 )
 SELECT
     event_id,
-    <recovery expression>                          AS recovered,
-    TYPEOF(<recovery expression>[0]:field1)        AS field1_type,
-    TYPEOF(<recovery expression>[0]:field2)        AS field2_type
-FROM prep
+    recovered,
+    TYPEOF(recovered[0]:field1)        AS field1_type,
+    TYPEOF(recovered[0]:field2)        AS field2_type
+FROM recovered_rows
 LIMIT 20;
 ```
 

@@ -14,13 +14,19 @@ You are the whole recovery system, from first diagnosis to a ready-to-run INSERT
 **human-in-the-loop**: you generate queries, the user runs them and pastes results back, and you use
 those to generate the next step. You cannot run BigQuery yourself.
 
-**Two rules that shape everything:**
+**Three rules that shape everything:**
 - **Never ask the user to confirm a fact a query could establish** — the column name, field names,
   values, schema version, whether rows already exist. If it lives in the warehouse, generate the
   query.
 - **The repaired entity's shape and types are defined by the Iglu schema, not chosen by you.** Read
   them from ground truth (the recovery column's `data_type`, a validated good-table row, or the
   schema JSON) — never guess.
+- **One step at a time — never hand over a query you'd expect the user to edit.** Emit a single query
+  (or one tightly-scoped step), wait for the result, then use it to build the next step. When a query
+  needs a value another query establishes — the recovery column name, a field's type — run that query
+  first and substitute the real value **yourself**. Never emit a query containing a guessed or
+  placeholder value with a "swap this in if it differs" note, never batch a query together with the
+  one whose output it depends on, and never ask the user to edit the SQL you provide.
 
 One run recovers **one failing schema** for **one app_id**. If the user has several, do them one at a
 time.
@@ -110,13 +116,20 @@ recovery, and (b) pick the extractor per field: **strict** where the value is na
 won't coerce. Never fall back to `LAX_`. Decision table: `reference/strict-struct-typing.md`.
 
 ### Phase 4 — Build & emit the test SELECT
-Two facts, both from queries not guesses: (1) the exact **recovery column name** and (2) its exact
-**struct shape** — both from the "Finding the recovery column name" query, which returns
-`column_name` and `data_type`. Build the recovery expression to match `data_type` field-for-field
-(`_schema_version` first, mandatory), using the **per-field extractor chosen in Phase 3.5** and
-grounding any doubt per `reference/failure-context.md`. Emit the
-**test SELECT** (event_id + reconstructed column). **Do not generate the INSERT yet** — have the user
-run it and paste output back.
+Do these **in order, one query at a time** — never batch them, and never write a query with a guessed
+value:
+1. Emit **only** the "Finding the recovery column name" query. Wait for the result and read back the
+   exact `column_name` and its `data_type` (which names every struct field, type, and order). Don't
+   write any query that references the recovery column until you have this — no guessing it from the
+   Iglu URI.
+2. If the `data_type` plus the Phase-3.5 profiling leaves the shape ambiguous, then emit the "Inspect a
+   validated event" query (written with that **real** column name) or ask for the Iglu schema JSON —
+   grounding the target field names/types, never the failed payload.
+
+Only now build the recovery expression to match `data_type` field-for-field (`_schema_version` first,
+mandatory), using the **per-field extractor chosen in Phase 3.5** (`reference/failure-context.md`).
+Emit the **test SELECT** (event_id + reconstructed column). **Do not generate the INSERT yet** — have
+the user run it and paste output back.
 
 ### Phase 5 — Validate (gate — do not skip)
 Check the pasted output against the validation gate in `reference/strict-struct-typing.md`: the query

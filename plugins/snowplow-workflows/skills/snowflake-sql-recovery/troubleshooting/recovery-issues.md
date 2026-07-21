@@ -104,6 +104,25 @@ validated good row. Re-run the test SELECT, then regenerate the INSERT.
 
 ---
 
+## Test SELECT fails: `Invalid argument types for function 'TYPEOF'`
+
+**Symptom.** The Phase 4 test SELECT errors with `SQL compilation error: Invalid argument types for
+function 'TYPEOF': (VARCHAR(...))` (or `INTEGER` / `BOOLEAN`), pointing at a `TYPEOF(...)` line.
+
+**Likely cause.** `TYPEOF()` was wrapped directly around a `::TYPE` cast — e.g.
+`TYPEOF(contexts_..._failure_1[0]:data:words::STRING)`. `TYPEOF()` only accepts a **VARIANT**, but a
+`::TYPE` cast returns a native scalar (VARCHAR/INTEGER/BOOLEAN), which it rejects.
+
+**Verify.** Look for any `TYPEOF(... ::STRING)` / `::INTEGER` / `::BOOLEAN` in the test SELECT — that
+raw-cast-inside-`TYPEOF` shape is the offender.
+
+**Fix.** Build the reconstructed column once in a `recovered_rows` CTE, then call `TYPEOF()` on
+**VARIANT navigation** into it — `TYPEOF(recovered[0]:<field>)`, not on the cast. Use the two-CTE
+test-SELECT pattern in `templates/recovery-sql.md`; navigating into the array you just built returns a
+VARIANT, which `TYPEOF()` accepts.
+
+---
+
 ## Duplicate pre-check returns > 0
 
 **Symptom.** The duplicate pre-check finds `event_id`s already present in the good table.
