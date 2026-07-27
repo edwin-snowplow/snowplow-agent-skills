@@ -20,10 +20,27 @@ Fields of each failure ROW:
 | `component_name` | `VARCHAR` | Pipeline component that rejected the event |
 | `component_version` | `VARCHAR` | |
 | `data` | `VARCHAR` | Original event payload as a JSON string — read with `json_extract_scalar` |
-| `errors` | `ARRAY(ROW(...))` | Structured validation errors |
+| `errors` | `ARRAY(ROW(...))` | Structured validation errors; each element carries `source`, `path`, `keyword`, `message`, … — `source` is the key one (see below) |
 | `failure_type` | `VARCHAR` | e.g. `SchemaViolation` |
 | `schema` | `VARCHAR` | Iglu URI of the schema that failed validation |
 | `timestamp` | `TIMESTAMP` | When the failure occurred |
+
+## The `source` field — contexts vs unstruct (nested under `errors`, not top-level)
+
+Whether the event failed as a **context entity** or the **self-describing (unstructured) event** is
+recorded on each error, at **`errors[1].source`** (1-indexed, native `ROW` field) — *not* a top-level
+failure field (`...failure_1[1].source` doesn't exist). Read it with
+`contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1].source`. Values:
+
+- **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
+  **ARRAY(ROW(...))** column (this skill's main path).
+- **`unstruct`** — the *same* schema failed as the self-describing event → recovers into the
+  `unstruct_event_<vendor>_<name>_<major>` column, a **single `ROW`** (not an array) — a different
+  target column **and** a different reconstruction (`CAST(ROW(...) AS ROW(...))`, no outer `ARRAY[...]`).
+
+**One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
+through one recovery expression or one generator run: scope to one `source`, recover it, then handle
+the other as a separate run into its own column.
 
 ## Navigation rules (and why)
 

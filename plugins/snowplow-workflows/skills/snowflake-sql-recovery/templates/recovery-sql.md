@@ -58,15 +58,23 @@ so it returns a handful of rows, not a flood.
 
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:failure_type::STRING AS failure_type,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors               AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:data                 AS data
+    contexts_com_snowplowanalytics_snowplow_failure_1[0]:failure_type::STRING     AS failure_type,
+    contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors[0]:source::STRING AS source,
+    contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors                   AS errors,
+    contexts_com_snowplowanalytics_snowplow_failure_1[0]:data                     AS data
 FROM <failed_database>.<failed_schema>.<failed_table>
 WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'   -- or a bounded range (see Time window)
   AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
   AND app_id = '<app_id>'
 LIMIT 10;
 ```
+
+The **`source`** column (`errors[0]:source` — nested under `errors`, **never** the top-level
+`[0]:source`, which is NULL) tells you whether each row failed as a `contexts` entity or an `unstruct`
+event. A mix means the recovery must be **split into separate runs into different columns** — scope to
+one `source` and handle the other separately (see `reference/failure-context.md`). Carry the same
+`errors[0]:source` predicate through the profiling, test, INSERT, and duplicate-check queries when you
+scope by source.
 
 ---
 

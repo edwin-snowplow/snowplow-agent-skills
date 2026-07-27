@@ -54,9 +54,10 @@ so it returns a handful of rows, not a flood.
 
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type AS failure_type,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].errors       AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].data         AS data
+    contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type              AS failure_type,
+    JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0].source) AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
+    contexts_com_snowplowanalytics_snowplow_failure_1[0].errors                    AS errors,
+    contexts_com_snowplowanalytics_snowplow_failure_1[0].data                      AS data
 FROM `<failed_project>.<failed_dataset>.<failed_table>`
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)  -- or a bounded range
   AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'

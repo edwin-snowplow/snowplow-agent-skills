@@ -81,7 +81,11 @@ app_id, and target entity column → Phase 3.
 Lead with the **summary identification query**; read off which schemas fail, at what volume, which
 `failure_type`, which app_ids. Have the user pick **one** schema; run the **row-level drill-in** to
 form a fix hypothesis — including whether it's a schema **resolution** failure rather than a
-validation one (see "Recovering a ResolutionError" below).
+validation one (see "Recovering a ResolutionError" below). The drill-in also surfaces **`source`** —
+read it from the nested `errors[…].source` path (never the top-level `source`, which is null): a mix of
+`contexts` and `unstruct` means the schema failed both as a context entity **and** as the
+self-describing event, which recover into **different columns** and must be **separate runs** (see
+`reference/failure-context.md`).
 
 **Offer the duplicate pre-check now (optional).** As soon as the schema is chosen — and before
 building any recovery expression — **explicitly ask** whether they want to confirm these events
