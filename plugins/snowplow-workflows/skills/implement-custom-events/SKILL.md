@@ -45,8 +45,8 @@ If `.snowplow/agent-context.md` exists (created by `setup-snowplow-context`), re
 
 Branch on the input:
 
-- **PRD / business goals, or KPIs undecided**: invoke the `create-data-spec` skill to produce the spec — its computability test, template, and empty-Open-Questions gate apply. The finished data spec (including its Snowplow-semantics section) is the spec that step 3 hands on.
-- **Small, self-evident feature** — where a full data spec would be ceremony: draft an inline lightweight spec for the user to review before any design work:
+- **PRD / business goals, or KPIs undecided**: invoke the `create-data-spec` skill to produce the spec — its computability test, template, and empty-Open-Questions gate apply. The finished data spec (including its Snowplow-semantics section) is the spec that step 3 hands on — treat `create-data-spec`'s closing handoff offer as this workflow's step 3.
+- **Small, self-evident feature — or any specific feature whose KPIs are already decided** — where a full data spec would be ceremony (`create-data-spec` itself excludes the already-agreed-events case): draft an inline lightweight spec for the user to review before any design work:
   - **Goal**: one sentence on what these events answer.
   - **Events**: name + trigger + why it matters.
   - **Entities**: name + which events they attach to + key fields.
@@ -176,5 +176,5 @@ Targets the typical custom-event-implementation path. Does not cover:
 
 - Server-side tracking on platforms outside web/iOS/Android (use `design-tracking-plan` plus the relevant SDK directly).
 - Streaming/enrichment configuration.
-- dbt modelling — use the unified-setup skill once events are flowing.
+- dbt modelling of the loaded events.
 - Promoting schemas from dev to prod environments.
