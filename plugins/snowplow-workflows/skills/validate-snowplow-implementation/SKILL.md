@@ -19,10 +19,10 @@ Use this skill when:
 
 Don't use this skill when:
 
-- Micro is not running (run setup-micro skill first)
-- Testing against DEV/PROD pipeline (use pipeline troubleshooting instead)
+- No tracking implementation exists yet (use install-snowplow-tracking skill first)
+- Testing against DEV/PROD pipeline (use the official snowplow plugin's troubleshooting skill instead)
 - Designing schemas (use design-tracking-plan skill)
-- Need to add new events to existing tracker (use implementation-guidance skill)
+- Need to add new events to existing tracker (use the official snowplow plugin's implementation-guidance skill)
 
 ## Prerequisites
 
@@ -202,7 +202,7 @@ Run any script with `--help` for full usage details.
 This skill validates implementations against a local Micro instance. It does not:
 
 - **Deploy schemas**: Use design-tracking-plan skill or Console to deploy schemas to DEV/PROD
-- **Test in live pipelines**: After Micro validation succeeds, test in DEV pipeline using pipeline-infrastructure skill
+- **Test in live pipelines**: After Micro validation succeeds, test in DEV pipeline using the official snowplow plugin's pipeline-infrastructure skill
 - **Debug complex enrichment issues**: Micro has limited enrichment support. For enrichment issues, test in DEV pipeline.
 - **Performance testing**: Micro is for functional testing only, not load testing
 
@@ -213,4 +213,4 @@ This skill validates implementations against a local Micro instance. It does not
 4. Deploy schemas to PROD
 5. Update tracker collector endpoint to PROD pipeline
 
-For production deployment workflow, consult the implementation-guidance skill Stage 4-5.
+For production deployment workflow, consult the official snowplow plugin's implementation-guidance skill.

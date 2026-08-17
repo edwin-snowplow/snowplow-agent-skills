@@ -18,9 +18,9 @@ Use this skill when:
 
 Don't use this skill when:
 
-- Application already has Snowplow tracking installed (use implementation-guidance instead)
-- Only need to add custom events to existing tracking (use implementation-guidance instead)
-- Need to troubleshoot existing tracking implementation (use troubleshooting skill instead)
+- Application already has Snowplow tracking installed (use the official snowplow plugin's implementation-guidance skill instead)
+- Only need to add custom events to existing tracking (use the official snowplow plugin's implementation-guidance skill instead)
+- Need to troubleshoot existing tracking implementation (use the official snowplow plugin's troubleshooting skill instead)
 
 ## Prerequisites
 
@@ -192,13 +192,13 @@ Do not rely on built-in knowledge for tracker APIs — they change with each rel
 - **TypeScript errors**: May need to install @types packages for JavaScript tracker
 - **Build errors**: Verify package versions are compatible with project dependencies
 
-For detailed troubleshooting after implementation, use the troubleshooting skill or validate-snowplow-implementation skill.
+For detailed troubleshooting after implementation, use the official snowplow plugin's troubleshooting skill or the validate-snowplow-implementation skill.
 
 ## Limits and Next Steps
 
 This skill sets up basic Snowplow tracking with OOTB events. After installation:
 
-- **For custom events/entities**: Use the implementation-guidance skill to add self-describing events with your schemas
+- **For custom events/entities**: Use the official snowplow plugin's implementation-guidance skill to add self-describing events with your schemas
 - **For schema design**: Use the design-tracking-plan skill to design and publish data structures
 - **For production deployment**: Update collector endpoint to DEV, validate, then update to PROD endpoint
 - **For advanced configuration**: Consult the fetched tracker documentation for platform-specific features (session configuration, global contexts, etc.)
@@ -206,5 +206,5 @@ This skill sets up basic Snowplow tracking with OOTB events. After installation:
 This skill does not cover:
 - Creating or deploying schemas (use design-tracking-plan skill)
 - Advanced tracker configuration beyond OOTB events
-- Server-side tracking (Node.js, Python, etc.) - use implementation-guidance skill
-- Troubleshooting complex tracking issues (use troubleshooting skill)
+- Server-side tracking (Node.js, Python, etc.) - use the official snowplow plugin's implementation-guidance skill
+- Troubleshooting complex tracking issues (use the official snowplow plugin's troubleshooting skill)

@@ -7,7 +7,7 @@ tools:
 
 # Debug Failed Events
 
-This skill is local-first: it assumes the failure is reproducible against Micro or that the user has pasted a bad-row payload. When the problem is production-pipeline-wide (events missing entirely, enrichment latency, loader failures) and the official `snowplow` plugin is installed, hand off to its `troubleshooting` skill instead of continuing here.
+This skill handles event-level failures — specific events failing schema resolution, validation, or enrichment. When the problem is pipeline-wide (events missing entirely, enrichment latency, loader failures) and the official `snowplow` plugin is installed, hand off to its `troubleshooting` skill instead of continuing here.
 
 Systematically debug Snowplow events that fail validation, identify root causes, and provide actionable fixes. Works regardless of where the failed event originated — pasted error message, Snowplow Micro (local), or a real pipeline (prod/QA).
 
@@ -26,7 +26,7 @@ Don't use this skill when:
 
 - Events are validating successfully (no errors observed in any source)
 - Need to set up initial tracking (use install-snowplow-tracking skill)
-- Testing works but need to deploy to production (use implementation-guidance skill)
+- Testing works but need to deploy to production (use the official snowplow plugin's implementation-guidance skill)
 - No failed event data is available yet (use validate-snowplow-implementation skill first to surface it)
 
 ## Prerequisites
@@ -340,7 +340,7 @@ When standard diagnostic workflow doesn't resolve the issue:
 
 This skill focuses on debugging validation failures. It does not cover:
 
-- **Pipeline infrastructure issues** - Use pipeline troubleshooting skill for collector/enrichment infrastructure problems
+- **Pipeline infrastructure issues** - Use the official snowplow plugin's troubleshooting skill for collector/enrichment infrastructure problems
 - **Performance issues** - Events arriving but slowly; use performance monitoring
 - **Schema design** - Use design-tracking-plan skill for creating/modifying schemas
 - **Initial implementation** - Use install-snowplow-tracking skill for setting up tracking from scratch
