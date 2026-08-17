@@ -82,12 +82,12 @@ Where a `snowplow-workflows` skill needs Console access and the `snowplow` plugi
 
 ## How the skills fit together
 
-The skills compose into one journey — decide what to measure, model it as schemas, instrument the tracker, prove the events validate — and each is also useful on its own. The diagram shows where each skill picks up and hands off.
+The skills compose into one journey — decide what to measure, structure it into a tracking plan, instrument the tracker, prove the events validate — and each is also useful on its own. The diagram shows where each skill picks up and hands off.
 
 ```mermaid
 flowchart LR
     ctx["setup-snowplow-context<br/><i>once per project</i>"] -.-> spec
-    spec["create-data-spec<br/><i>what to measure</i>"] --> design["design-tracking-plan<br/><i>how to model it</i>"]
+    spec["create-data-spec<br/><i>what to measure</i>"] --> design["design-tracking-plan<br/><i>how to structure it</i>"]
     design --> inst["instrument the code"]
     install["install-snowplow-tracking<br/><i>if no tracker yet</i>"] --> inst
     inst --> micro["setup-micro<br/><i>local test pipeline</i>"] --> validate["validate-snowplow-implementation"]
