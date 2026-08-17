@@ -49,6 +49,9 @@ Read `reference/spec_translation_guide.md` before extracting any event under eit
 
 5. **Fill the template.** Write the spec from `templates/data-spec.md`, keeping every section and every column. Give each event a `snake_case` verb-noun name and a priority, and each entity a source of truth.
 
+   - **Priority** is graded against the KPI table, not intuition: **P0** — a named KPI cannot be computed without the event; **P1** — the event feeds a secondary question in the spec; **P2** — speculative. Challenge every P2 against the vanity-event rule in `reference/spec_translation_guide.md`: name the question that consumes it, or drop it.
+   - **Identity** is derived from the source document's auth model: does the product have login, and does any KPI need user-level or cross-session counts? Those two answers fill the User identification field. When the document answers neither, record identity as an Open Question rather than assuming anonymous-only or logged-in-only.
+
 6. **Review with the user and empty the Open Questions.** Walk the spec through with the user and resolve each open question into the spec body. The spec is finished when the Open Questions section is empty — not when the tables are populated.
 
 ### Entry B — from an existing data spec
@@ -57,7 +60,8 @@ Read `reference/spec_translation_guide.md` before extracting any event under eit
    - each KPI computable from listed events, with the computation stated;
    - objects shared across events modelled as entities, not repeated event properties;
    - event names `snake_case` verb-noun;
-   - a priority on every event.
+   - a priority on every event, graded by the P0/P1/P2 rubric in Entry A step 5;
+   - identity stated and derived from the auth model per Entry A step 5, not assumed.
 
    Run the KPI checks through the computability test in `reference/spec_translation_guide.md`, which also lists the failure modes PM specs arrive with.
 2. **Fix the failures with the user** before translating. A spec that fails validation is not handed on.
