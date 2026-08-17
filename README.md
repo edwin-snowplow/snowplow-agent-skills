@@ -72,13 +72,49 @@ Where a `snowplow-workflows` skill needs Console access and the `snowplow` plugi
 
 |Skill|What it does|
 |---|---|
-| — | Planned — no skills shipped yet. See [ROADMAP.md](ROADMAP.md) for the box-by-box mapping (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
+| — | Planned — no skills shipped yet. See [Roadmap](#roadmap) for the box-by-box mapping (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
 
 ### Governance & Migration
 
 |Skill|What it does|
 |---|---|
-| — | Planned — no skills shipped yet. See [ROADMAP.md](ROADMAP.md) for the box-by-box mapping (schema audits, custom JS enrichments, anonymous tracking, GA4 → Snowplow and other migration paths). |
+| — | Planned — no skills shipped yet. See [Roadmap](#roadmap) for the box-by-box mapping (schema audits, custom JS enrichments, anonymous tracking, GA4 → Snowplow and other migration paths). |
+
+## How the skills fit together
+
+The skills compose into one journey — decide what to measure, structure it into a tracking plan, instrument the tracker, prove the events validate — and each is also useful on its own. The diagram shows where each skill picks up and hands off.
+
+```mermaid
+flowchart LR
+    ctx["setup-snowplow-context<br/><i>once per project</i>"] -.-> spec
+    spec["create-data-spec<br/><i>what to measure</i>"] --> design["design-tracking-plan<br/><i>how to structure it</i>"]
+    design --> inst["instrument the code"]
+    install["install-snowplow-tracking<br/><i>if no tracker yet</i>"] --> inst
+    inst --> micro["setup-micro<br/><i>local test pipeline</i>"] --> validate["validate-snowplow-implementation"]
+    validate -->|events in /bad| debug["debug-failed-events"]
+    debug -->|fix, re-test| validate
+    e2e["implement-custom-events<br/><i>orchestrates the whole chain</i>"] -.-> spec & design & install & micro & validate
+    docs["fetch-snowplow-docs<br/><i>utility — any step may call it</i>"]
+
+    classDef orchestrator stroke-width:3px
+    classDef notskill stroke-dasharray: 5 5
+    class e2e orchestrator
+    class inst,docs notskill
+```
+
+Dotted arrows mark delegation, not duplication: `implement-custom-events` drives the other skills in sequence rather than re-implementing them, and `setup-snowplow-context` runs once per project so every later skill reads its context file instead of re-asking. Dashed boxes aren't skills — *instrument the code* is your application change, and `fetch-snowplow-docs` is a utility any step can call for current tracker APIs.
+
+**Where do I start?** Pick your entry point by what you already have:
+
+| You have | Start with |
+|---|---|
+| A PRD or business goals, tracking undecided | [`create-data-spec`](plugins/snowplow-workflows/skills/create-data-spec/SKILL.md) |
+| Agreed events and entities, need schemas | [`design-tracking-plan`](plugins/snowplow-workflows/skills/design-tracking-plan/SKILL.md) |
+| "Just do the whole thing, end to end" | [`implement-custom-events`](plugins/snowplow-workflows/skills/implement-custom-events/SKILL.md) |
+| An app with no Snowplow tracker yet | [`install-snowplow-tracking`](plugins/snowplow-workflows/skills/install-snowplow-tracking/SKILL.md) |
+| Tracking code written, needs verifying | [`setup-micro`](plugins/snowplow-workflows/skills/setup-micro/SKILL.md) → [`validate-snowplow-implementation`](plugins/snowplow-workflows/skills/validate-snowplow-implementation/SKILL.md) |
+| Events failing / bad rows | [`debug-failed-events`](plugins/snowplow-workflows/skills/debug-failed-events/SKILL.md) |
+| Starting Snowplow work in a fresh repo | [`setup-snowplow-context`](plugins/snowplow-workflows/skills/setup-snowplow-context/SKILL.md) — run it first, once |
 
 ## Layout
 
@@ -99,7 +135,7 @@ Where a `snowplow-workflows` skill needs Console access and the `snowplow` plugi
 │       │   └── plugin.json       # Claude Code native manifest
 │       ├── .plugin/
 │       │   └── plugin.json       # open-plugin manifest
-│       └── skills/               # nine bundled SKILL.md directories
+│       └── skills/               # bundled skills, one SKILL.md directory each
 ├── README.md
 └── ROADMAP.md
 ```
@@ -115,6 +151,8 @@ python3 scripts/validate.py --all
 ```
 
 New or edited skills should follow the conventions in [`skill_design_guidelines/`](skill_design_guidelines/) — see `skill_design_guide.md` and the `SKILL_TEMPLATE.md` / `SKILL_TEMPLATE_EXAMPLE.md` pair.
+
+If your change adds, renames, or removes a skill — or changes how the skills hand off to each other — update the [How the skills fit together](#how-the-skills-fit-together) diagram and entry-point table to match. The validator fails when that section misses a shipped skill or names one that no longer exists, but only a human can keep the arrows honest.
 
 ## Roadmap
 
