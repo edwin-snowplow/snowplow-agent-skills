@@ -49,7 +49,7 @@ data-products/
     web-storefront.yaml
 ```
 
-Data structures are one file per schema, foldered by vendor. Tracking plans live at the top of `data-products/`, with source applications in `data-products/source-apps/`. Event specifications are embedded inside their tracking plan file, not stored separately — the same rule as the MCP path, where an event spec is created with its event schema and all entities in one call.
+Data structures are one file per schema, foldered by vendor. Tracking plans live at the top of `data-products/`, with source applications in `data-products/source-apps/`. Event specifications are embedded inside their tracking plan file, not stored separately — the git equivalent of Phase 7's single-call rule on the MCP path.
 
 A data structure file wraps the JSON Schema in CLI metadata:
 
