@@ -22,6 +22,8 @@ Repo-level (--all):
     .claude-plugin/plugin.json and .plugin/plugin.json present, parsed,
     and identical
   - every skill under every plugin's skills/ dir passes the per-skill checks
+  - README.md's "How the skills fit together" section mentions every shipped
+    skill and names no skill that doesn't exist
 """
 import glob
 import json
@@ -50,6 +52,17 @@ RESERVED_SKILL_NAMES = {
     "tracking-design",
     "troubleshooting",
 }
+
+# README section that must track the shipped skill set (see
+# check_readme_skill_graph). Backticked kebab-case tokens in that section
+# which are NOT skill names belong in the allowlist below.
+README_SECTION_HEADING = "## How the skills fit together"
+README_NON_SKILL_TOKENS = {
+    "snowplow-cli",
+    "snowplow-workflows",
+    "open-plugin",
+} | RESERVED_SKILL_NAMES
+README_SKILL_TOKEN_RE = re.compile(r"`([a-z0-9]+(?:-[a-z0-9]+)+)`")
 
 # Path-like references to a skill's own asset directories, e.g.
 # `scripts/analyze.py` or `examples/foo/`.
@@ -256,11 +269,9 @@ def check_marketplaces(root: Path = ROOT):
     return errors
 
 
-def check_all(root: Path = ROOT):
-    """Repo-wide validation: catalogs, every plugin's manifest pair, every
-    plugin's skills — discovered from plugins/* AND marketplace sources, so
-    an unregistered plugin dir is still validated."""
-    errors = list(check_marketplaces(root))
+def discover_plugin_dirs(root: Path = ROOT):
+    """Plugin dirs from plugins/* AND marketplace sources, so an
+    unregistered plugin dir is still validated."""
     plugin_dirs = set()
     plugins_root = root / "plugins"
     if plugins_root.is_dir():
@@ -281,7 +292,66 @@ def check_all(root: Path = ROOT):
             src = entry.get("source")
             if src and (root / src).is_dir():
                 plugin_dirs.add((root / src).resolve())
-    for plugin in sorted(plugin_dirs):
+    return plugin_dirs
+
+
+def check_readme_skill_graph(root: Path = ROOT):
+    """The README's "How the skills fit together" section must track the
+    shipped skill set: every skill dir is mentioned in it, and every
+    backticked kebab-case token in it resolves to a real skill (or the
+    README_NON_SKILL_TOKENS allowlist). Catches a skill added, renamed, or
+    removed without the diagram/entry-point table following. Skipped when
+    README.md is absent; whether the arrows between skills still tell the
+    truth is a human check — see the README's Contributing section."""
+    readme = root / "README.md"
+    if not readme.is_file():
+        return []
+    skills = set()
+    for plugin in discover_plugin_dirs(root):
+        skills_dir = plugin / "skills"
+        if skills_dir.is_dir():
+            skills.update(d.name for d in skills_dir.iterdir() if d.is_dir())
+    section_lines, in_section = [], False
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if line.strip() == README_SECTION_HEADING:
+            in_section = True
+        elif in_section and line.startswith("## "):
+            break
+        elif in_section:
+            section_lines.append(line)
+    if not in_section:
+        return [
+            f"README.md: missing required section {README_SECTION_HEADING!r} "
+            "(if it was renamed, update README_SECTION_HEADING in scripts/validate.py)"
+        ]
+    section = "\n".join(section_lines)
+    title = README_SECTION_HEADING.lstrip("# ")
+    errors = []
+    for name in sorted(skills):
+        if not re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", section):
+            errors.append(
+                f"README.md: skill {name!r} is missing from the {title!r} section "
+                "— add it to the diagram and entry-point table"
+            )
+    for token in sorted(set(README_SKILL_TOKEN_RE.findall(section))):
+        if token not in skills and token not in README_NON_SKILL_TOKENS:
+            errors.append(
+                f"README.md: {title!r} section names {token!r}, which is not a "
+                "shipped skill — update the section, or add the token to "
+                "README_NON_SKILL_TOKENS in scripts/validate.py if it is not "
+                "meant to be a skill name"
+            )
+    return errors
+
+
+def check_all(root: Path = ROOT):
+    """Repo-wide validation: catalogs, README skill-graph sync, every
+    plugin's manifest pair, every plugin's skills — plugins discovered from
+    plugins/* AND marketplace sources, so an unregistered plugin dir is
+    still validated."""
+    errors = list(check_marketplaces(root))
+    errors += check_readme_skill_graph(root)
+    for plugin in sorted(discover_plugin_dirs(root)):
         errors += check_plugin_manifest_pair(plugin)
         skills_dir = plugin / "skills"
         if skills_dir.is_dir():

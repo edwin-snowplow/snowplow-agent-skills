@@ -334,6 +334,73 @@ class TestCheckAll(TempDirTest):
         self.assertEqual(validate.check_all(self.root), [])
 
 
+class TestReadmeSkillGraph(TempDirTest):
+    HEADING = validate.README_SECTION_HEADING
+
+    def _tree(self, skill_names: list, readme: str | None):
+        make_marketplace(
+            self.root,
+            [{"name": "p1", "source": "plugins/p1"}],
+            {"plugins/p1": {"name": "p1", "version": "1.0.0"}})
+        for name in skill_names:
+            make_skill(self.root / "plugins" / "p1" / "skills", name)
+        if readme is not None:
+            (self.root / "README.md").write_text(readme, encoding="utf-8")
+
+    def test_no_readme_skips(self):
+        self._tree(["good-skill"], None)
+        self.assertEqual(validate.check_readme_skill_graph(self.root), [])
+
+    def test_all_skills_mentioned_passes(self):
+        self._tree(["good-skill", "other-skill"],
+                   f"# T\n\n{self.HEADING}\n\ngood-skill then `other-skill`.\n\n## Next\n")
+        self.assertEqual(validate.check_readme_skill_graph(self.root), [])
+
+    def test_missing_skill_fails(self):
+        self._tree(["good-skill", "other-skill"],
+                   f"# T\n\n{self.HEADING}\n\nOnly `good-skill` here.\n")
+        errors = validate.check_readme_skill_graph(self.root)
+        self.assertTrue(any("other-skill" in e and "missing" in e
+                            for e in errors), errors)
+
+    def test_missing_section_fails(self):
+        self._tree(["good-skill"], "# T\n\n## Something else\n\ngood-skill\n")
+        errors = validate.check_readme_skill_graph(self.root)
+        self.assertTrue(any("missing required section" in e for e in errors), errors)
+
+    def test_mention_outside_section_does_not_count(self):
+        self._tree(["good-skill"],
+                   f"# T\n\ngood-skill up front.\n\n{self.HEADING}\n\nNothing.\n")
+        errors = validate.check_readme_skill_graph(self.root)
+        self.assertTrue(any("good-skill" in e and "missing" in e
+                            for e in errors), errors)
+
+    def test_longer_token_containing_name_does_not_count(self):
+        self._tree(["good-skill"],
+                   f"# T\n\n{self.HEADING}\n\nSee good-skill-extras.\n")
+        errors = validate.check_readme_skill_graph(self.root)
+        self.assertTrue(any("good-skill" in e and "missing" in e
+                            for e in errors), errors)
+
+    def test_dangling_backtick_token_fails(self):
+        self._tree(["good-skill"],
+                   f"# T\n\n{self.HEADING}\n\n`good-skill` and `gone-skill`.\n")
+        errors = validate.check_readme_skill_graph(self.root)
+        self.assertTrue(any("gone-skill" in e and "not a" in e
+                            for e in errors), errors)
+
+    def test_allowlisted_token_passes(self):
+        self._tree(["good-skill"],
+                   f"# T\n\n{self.HEADING}\n\n`good-skill` via `snowplow-cli`.\n")
+        self.assertEqual(validate.check_readme_skill_graph(self.root), [])
+
+    def test_check_all_includes_readme_errors(self):
+        self._tree(["good-skill"], f"# T\n\n{self.HEADING}\n\nNothing here.\n")
+        errors = validate.check_all(self.root)
+        self.assertTrue(any("good-skill" in e and "missing" in e
+                            for e in errors), errors)
+
+
 class TestMarketplaces(TempDirTest):
     def test_valid_marketplace_passes(self):
         make_marketplace(
