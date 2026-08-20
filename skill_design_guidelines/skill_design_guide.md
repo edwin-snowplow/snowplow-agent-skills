@@ -176,6 +176,8 @@ Some skills read per-project config seeded by a setup skill (e.g. `setup-snowplo
 
 Pointer rule: hard-dependency skills carry one explicit pointer line in their context-loading step, offering once to run the setup skill before continuing. Soft-dependency skills carry none — don't cargo-cult the pointer into places where it isn't load-bearing.
 
+Ownership rule: the setup skill is the config file's only writer. Consuming skills use values as written — a formatting difference is never a reason to rewrite the file, since a cosmetic rewrite churns the user's working tree for zero information gain.
+
 ## Choosing the Right Form: A Decision Procedure
 
 When you have a chunk of knowledge to encode, ask in order:

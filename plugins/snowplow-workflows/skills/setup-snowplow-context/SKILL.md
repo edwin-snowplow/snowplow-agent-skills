@@ -44,6 +44,8 @@ Scan the project before asking anything. Each value found here is one question t
 
 Report what was detected alongside the evidence for each, so the user can correct a wrong inference in the same breath as answering the rest.
 
+**Suggesting `schema-vendor`.** Derive the suggested vendor from the project itself: reverse the site domain, package namespace, or brand name into domain-style form (`peakthreads.com` → `com.peakthreads`). `io.snowplow` and `com.snowplowanalytics.*` are Snowplow-owned namespaces, never a customer's vendor — on trial Console orgs the org default vendor is `io.snowplow`, a placeholder. When the Console default is Snowplow-owned, present it labelled "org default — trial placeholder, probably not your vendor" alongside the project-derived recommendation, and write it to the file only on the user's explicit confirmation.
+
 ### 3. Ask once, for the gaps only
 
 Put every undetected key into a single compact numbered list in one message. For each, offer the allowed values from the template and mark your best guess as the default, so the user can reply "all defaults" or answer three of eight. Confirm the detected values in the same message rather than a second round trip.
@@ -55,6 +57,10 @@ Put every undetected key into a single compact numbered list in one message. For
 Write `.snowplow/agent-context.md` from `templates/agent-context.md`, keeping the template's key names, order, and header comment exactly. Replace every `{{ … }}` placeholder with the agreed value.
 
 All eight keys are present in every file written. Where a value is genuinely unresolved, write `unknown` and keep the key — other skills branch on reading the key, so a dropped key reads as a broken file rather than an open question.
+
+Write `console-org` in the template's canonical `org-name (org-id)` format (or `none`), so a prefilled file and a skill-written file agree byte-for-byte.
+
+This skill is the file's only writer. Every other skill consumes the values as written — a formatting difference is information-free, and a consuming skill that "normalises" it churns the user's working tree every session.
 
 ### 5. Point the project's agent instructions at the file
 
@@ -75,6 +81,8 @@ If both files are absent, create nothing. Tell the user the context file was wri
 - **A skill still asks for the vendor**: the file was written somewhere other than `.snowplow/agent-context.md` at the repo root, or a key was renamed. The eight key names are a contract — match the template.
 - **Detection reports the wrong platform**: a tracker package appears in a lockfile or an example directory rather than application code. Verify with a tracker initialisation call before recording the platform.
 - **`mcp-available: yes` but Console calls fail**: the MCP is installed and unauthenticated, or is pointed at another organization. This file records availability, not credentials.
+- **`schema-vendor: io.snowplow` in the file**: a trial org's Console default was accepted as the vendor. Every downstream schema inherits it. Re-derive the vendor from the project (step 2) and correct the file.
+- **Context file shows a diff after another skill ran**: a consuming skill rewrote a value to its own preferred formatting. Revert the cosmetic change — this skill is the file's only writer.
 
 ## Limits
 
