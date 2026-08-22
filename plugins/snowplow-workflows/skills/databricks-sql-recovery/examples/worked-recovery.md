@@ -108,15 +108,27 @@ CREATE TABLE acme_prod.atomic.events_recovery_staging AS
 SELECT * FROM acme_prod.atomic.events LIMIT 0;
 ```
 
-## Phase 7 — generate the INSERT
+## Phase 7 — generate the INSERT (local script)
 
-Ran the INSERT-generator with `<target_*> = acme_prod.atomic.events_recovery_staging`,
-`<recovery_column> = contexts_com_acme_user_entity_1`, the validated expression (with every single
-quote doubled), and the same window/app_id/schema. It returned one cell: a positional
-`INSERT ... WITH prep AS (...) SELECT ...` where the failure column is `CAST(NULL AS ...)`,
-`load_tstamp` is `CURRENT_TIMESTAMP()`, `contexts_com_acme_user_entity_1` carries the
-`ARRAY(NAMED_STRUCT(...))`, atomic columns pass through, and good-only columns are `CAST(NULL AS ...)`.
-Reviewed it, column count matched the good table.
+Had the user run the two column-metadata queries (good and failed
+`information_schema.columns`, `ORDER BY ordinal_position`) and pasted each result — plain
+`column_name, full_data_type`, so nothing was lost in the copy. Saved those as `good_columns.txt` /
+`failed_columns.txt`, the validated expression as `recovery_expression.sql` (single quotes left
+single — no doubling), and a `config.json` with `TARGET_* = acme_prod.atomic.events_recovery_staging`,
+`RECOVERY_COLUMN = contexts_com_acme_user_entity_1`, and the same window/app_id/schema. Then:
+
+```bash
+python3 scripts/generate_insert.py --config config.json \
+    --good-columns good_columns.txt --failed-columns failed_columns.txt \
+    --recovery-expr recovery_expression.sql --out recovery.sql
+```
+
+The stderr summary confirmed the column counts (and that the recovery column was matched). `recovery.sql`
+was a positional `INSERT ... WITH prep AS (...) SELECT ...` where the failure column is
+`CAST(NULL AS ...)`, `load_tstamp` is `CURRENT_TIMESTAMP()`, `contexts_com_acme_user_entity_1` carries
+the `ARRAY(NAMED_STRUCT(...))`, atomic columns pass through, and good-only columns are `CAST(NULL AS ...)`.
+Reviewed it, column count matched the good table. (The in-warehouse generator was avoided because its
+copied result cell loses single quotes — see `troubleshooting/recovery-issues.md`.)
 
 ## Phase 8 — run, validate, promote
 

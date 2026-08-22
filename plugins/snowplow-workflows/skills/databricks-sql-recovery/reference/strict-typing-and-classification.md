@@ -2,13 +2,16 @@
 
 **The decision this doc helps you make:** whether the reconstructed entity is shaped correctly enough
 that a positional `INSERT ... SELECT` into a Delta table will succeed and land clean data — and how
-the generator decides what to do with every other column. This is the judgment layer behind the
-INSERT-generator template in `templates/recovery-sql.md`.
+each other column is classified. This is the judgment layer behind the INSERT generation in
+`templates/recovery-sql.md`.
 
-Like the Snowflake flow, there is **no local script**: the INSERT-generator query reads both tables'
-`INFORMATION_SCHEMA.COLUMNS` and builds the wide INSERT itself. Like the Athena/BigQuery flow,
-Databricks struct typing is **strict**: the reconstructed entity's field names, types, and order must
-match the target column's type.
+Like the Athena flow, the wide INSERT is assembled by a **local script** (`scripts/generate_insert.py`)
+from the good and failed tables' `information_schema.columns` pastes — not by an in-warehouse generator
+query, because Databricks' result-grid copy strips single quotes from a generated SQL cell (see
+`troubleshooting/recovery-issues.md`). The classification below is what the script applies per column;
+the in-warehouse generator (kept only as a no-Python fallback) applies the same rules. Like the
+Athena/BigQuery flow, Databricks struct typing is **strict**: the reconstructed entity's field names,
+types, and order must match the target column's type.
 
 ## Strict struct typing (the key Databricks constraint)
 
@@ -33,9 +36,9 @@ positional line-up and reviews poorly even when the names are right.
 
 ## Column classification (what the generator does, per column)
 
-For the INSERT, every column in the **good** events table is classified. In Databricks this is done
-by the generator query joining `good` and `failed` `INFORMATION_SCHEMA.COLUMNS`, per column in
-good-table `ordinal_position` order:
+For the INSERT, every column in the **good** events table is classified. The script (or the fallback
+generator query) reads both tables' `information_schema.columns` and decides, per column in good-table
+`ordinal_position` order:
 
 1. **The failure column** (`contexts_com_snowplowanalytics_snowplow_failure_1`) →
    `CAST(NULL AS <good full_data_type>)` — kept in position (positional INSERT), always null in

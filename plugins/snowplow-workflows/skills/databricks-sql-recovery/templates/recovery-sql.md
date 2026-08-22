@@ -57,7 +57,7 @@ so it returns a handful of rows, not a flood.
 ```sql
 SELECT
     contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type       AS failure_type,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0].source   AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
+    GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source') AS source,  -- errors is ARRAY<STRING> → JSON-extract; contexts vs unstruct, a mix = separate runs (see reference/failure-context.md)
     contexts_com_snowplowanalytics_snowplow_failure_1[0].errors             AS errors,
     contexts_com_snowplowanalytics_snowplow_failure_1[0].data               AS data
 FROM <failed_catalog>.<failed_schema>.<failed_table>
@@ -237,17 +237,94 @@ proceeding. (A nullable/optional field may legitimately be NULL; judge against t
 
 ---
 
-## INSERT-generator query (Phase 7 — Databricks builds the INSERT itself)
+## Generate the INSERT with the local script (Phase 7 — PRIMARY)
 
-This joins the good and failed tables' `INFORMATION_SCHEMA.COLUMNS`, classifies each good-table
-column, and emits the **full INSERT statement as a single text cell**. The user runs it, copies the
-returned statement, and runs that.
+The good table has ~130 columns and the INSERT is positional, so the column list and order come from
+metadata. `scripts/generate_insert.py` assembles the whole statement **locally** and writes it to a
+`.sql` file — nothing quote-laden is copied out of a Databricks result cell, so no single quotes get
+stripped in transit (see the fallback caveat below for why that matters).
+
+### Step 1 — column-metadata queries (the user runs both, pastes each result)
+
+These return plain `column_name, full_data_type` in ordinal order — no quotes to strip, so the copy is
+lossless. Run **once against the good table, once against the failed table**.
+
+```sql
+-- GOOD table columns
+SELECT column_name, full_data_type
+FROM <good_catalog>.information_schema.columns
+WHERE table_schema = '<good_schema>' AND table_name = '<good_table>'
+ORDER BY ordinal_position;
+```
+
+```sql
+-- FAILED table columns
+SELECT column_name, full_data_type
+FROM <failed_catalog>.information_schema.columns
+WHERE table_schema = '<failed_schema>' AND table_name = '<failed_table>'
+ORDER BY ordinal_position;
+```
+
+### Step 2 — run the script
+
+Save the two pastes (`good_columns.txt`, `failed_columns.txt`), the validated Phase-4 recovery
+expression (`recovery_expression.sql`, **single quotes stay single** — it is *not* embedded in a
+string literal here, so do **not** double them), and a `config.json`:
+
+```json
+{
+  "GOOD_CATALOG": "<good_catalog>", "GOOD_SCHEMA": "<good_schema>", "GOOD_TABLE": "<good_table>",
+  "FAILED_CATALOG": "<failed_catalog>", "FAILED_SCHEMA": "<failed_schema>", "FAILED_TABLE": "<failed_table>",
+  "RECOVERY_COLUMN": "<recovery_column>",
+  "FAILING_SCHEMA_URI": "<failing_schema_uri>",
+  "APP_ID": "<app_id>",
+  "DAYS_LOOKBACK": <days>,
+  "TARGET_CATALOG": "<target_catalog>", "TARGET_SCHEMA": "<target_schema>", "TARGET_TABLE": "<target_table>"
+}
+```
+
+`TARGET_*` is optional (defaults to `GOOD_*`); set it to the **staging** table for the staging path.
+For a bounded window instead of a lookback, drop `DAYS_LOOKBACK` and set `"LOAD_TSTAMP_START": "<start>"`
+(and optionally `"LOAD_TSTAMP_END": "<end>"`). Then:
+
+```bash
+python3 scripts/generate_insert.py \
+    --config config.json \
+    --good-columns good_columns.txt \
+    --failed-columns failed_columns.txt \
+    --recovery-expr recovery_expression.sql \
+    --out recovery.sql
+```
+
+It prints a sanity summary to stderr (good/failed column counts, pass-through, nulled) and writes the
+runnable INSERT to `recovery.sql`. If it warns the recovery column wasn't found, `RECOVERY_COLUMN`
+doesn't match the good table — fix it and re-run. Review `recovery.sql` with the user (recovery column
+carries the expression, failure column nulled, `load_tstamp` refreshed, positional order matches the
+good table), then have them run it.
+
+The script classifies each good-table column identically to the in-warehouse generator below: recovery
+column → the expression; `load_tstamp` → `CURRENT_TIMESTAMP()`; failure column → `CAST(NULL AS <type>)`;
+present in failed table → pass-through; good-only → `CAST(NULL AS <type>)`. (Rationale:
+`reference/strict-typing-and-classification.md`.)
+
+---
+
+## In-warehouse INSERT-generator query (Phase 7 — FALLBACK, no local Python)
+
+> **Use this only when the user can't run the local script.** It joins the good and failed tables'
+> `INFORMATION_SCHEMA.COLUMNS`, classifies each column, and emits the **full INSERT as a single text
+> cell** for the user to copy and run. **The catch:** Databricks' result-grid "copy as plain text"
+> **strips single-quote characters**, so the copied statement can arrive with its string literals
+> unquoted (e.g. `'test-app'` → `test-app`) and won't parse. If you use this path, tell the user to
+> copy from the **expanded/raw cell** (not the grid preview) and confirm the quotes survived before
+> running — or better, switch to the script above, which avoids the round-trip entirely.
 
 Fill in every `<placeholder>`. The recovery expression is embedded inside a **single-quoted** string
-literal, so **every single quote inside it must be doubled** (`''`). `array_sort` orders the emitted
-expressions by `ordinal_position` (its first struct field) so the INSERT is positional and lines up
-with the good table — `collect_list` alone does not guarantee order. (How each column is classified:
-see `reference/strict-typing-and-classification.md`.)
+literal, so **every single quote inside it must be doubled** (`''`) — this doubling is *only* for this
+in-warehouse form; the script path takes the expression with single quotes. `array_sort` orders the
+emitted expressions by `ordinal_position` (its first struct field) so the INSERT is positional and
+lines up with the good table — `collect_list` alone does not guarantee order. (How each column is
+classified: see `reference/strict-typing-and-classification.md`.)
 
 ```sql
 WITH good_cols AS (

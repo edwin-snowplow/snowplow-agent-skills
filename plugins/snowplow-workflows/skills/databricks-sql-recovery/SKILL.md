@@ -1,6 +1,6 @@
 ---
 name: databricks-sql-recovery
-description: Recover Snowplow failed events from a Databricks failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in Databricks / Delta Lake, especially events that failed on a single custom entity/context. Builds the wide INSERT itself with an INFORMATION_SCHEMA metadata query and reconstructs entities as native ARRAY-of-STRUCT columns via ARRAY(NAMED_STRUCT(...)), matching the target column field names, types, and order exactly (read from ground truth, never guessed). Handles Databricks specifics — GET_JSON_OBJECT string extraction, CAST typing, and ANSI-mode-dependent cast behaviour.
+description: Recover Snowplow failed events from a Databricks failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in Databricks / Delta Lake, especially events that failed on a single custom entity/context. Assembles the wide INSERT from INFORMATION_SCHEMA column metadata (via a bundled local script) and reconstructs entities as native ARRAY-of-STRUCT columns via ARRAY(NAMED_STRUCT(...)), matching the target column field names, types, and order exactly (read from ground truth, never guessed). Handles Databricks specifics — GET_JSON_OBJECT string extraction, CAST typing, and ANSI-mode-dependent cast behaviour.
 ---
 
 # Databricks failed-events recovery
@@ -42,16 +42,24 @@ time.
   column, the Phase 3.5 profiling decision, and the Phase 5 validation gate.
 - **`examples/worked-recovery.md`** — a complete run end to end (string→BIGINT), to pattern-match against.
 - **`troubleshooting/recovery-issues.md`** — symptom → cause → verify → fix for when a step goes wrong.
+- **`scripts/generate_insert.py`** — assembles the wide INSERT locally (Phase 7) from plain-text
+  column pastes, so no quote-laden SQL is round-tripped through the Databricks result grid.
 
 Read the relevant form at each phase rather than working from memory — they encode edge cases
 confirmed against real Snowplow tables.
 
 ## What makes Databricks specific (a hybrid of the Snowflake and Athena flows)
 
-- **The INSERT builds itself — no script (like Snowflake).** A single metadata query joins the good
-  and failed tables' `INFORMATION_SCHEMA.COLUMNS` (Databricks exposes `full_data_type`), classifies
-  each column (pass-through / null-cast / recovery / load_tstamp / failure), and emits the full INSERT
-  as text. No `generate_insert.py`, no `DESCRIBE` paste.
+- **The wide INSERT is assembled by a local script (like Athena).** The good table has ~130 columns
+  and the INSERT is positional, so the column list and order come from metadata, not memory. The user
+  pastes the good and failed tables' `information_schema.columns` (plain `column_name, full_data_type`
+  — copy-safe), and `scripts/generate_insert.py` classifies each column (pass-through / null-cast /
+  recovery / load_tstamp / failure) and writes the full INSERT to a `.sql` file locally.
+  **Why a local script and not an in-warehouse generator:** the equivalent one-query generator builds
+  the whole INSERT as a string in a result cell, and Databricks' result-grid "copy as plain text"
+  **strips single-quote characters** — so the pasted statement won't parse (unquoted string literals).
+  Assembling locally keeps every quote intact. The in-warehouse generator is kept only as a fallback
+  for when local Python isn't available (`templates/recovery-sql.md`).
 - **Strict struct typing (like Athena/BigQuery).** Entity columns are native `ARRAY<STRUCT<...>>`.
   Delta resolves struct fields **by name**, so the reconstruction's field names must match exactly;
   keep types and order matching too. The shape is always read from ground truth
@@ -92,8 +100,9 @@ Lead with the **summary identification query**; read off which schemas fail, at 
 `failure_type` (e.g. `SchemaViolation`), which app_ids. Have the user pick **one** schema; run the
 **row-level drill-in** to form a fix hypothesis — including whether it's a schema **resolution**
 failure rather than a validation one (see "Recovering a ResolutionError" below). The drill-in also
-surfaces **`source`** — read it from the nested `errors[…].source` path (never the top-level `source`,
-which is null): a mix of `contexts` and `unstruct` means the schema failed both as a context entity
+surfaces **`source`** via `GET_JSON_OBJECT(errors[0], '$.source')` (`errors` is `ARRAY<STRING>`, so
+JSON-extract — don't dot into it, and never read the top-level `source`, which is null): a mix of
+`contexts` and `unstruct` means the schema failed both as a context entity
 **and** as the self-describing event, which recover into **different columns** and must be **separate
 runs** (see `reference/failure-context.md`).
 
@@ -159,18 +168,42 @@ row count matches. If anything fails, fix the expression and re-emit the test SE
 Diagnostics: `troubleshooting/recovery-issues.md`.
 
 ### Phase 6 — Choose the write path
-Ask: **staging table** (recommended — inspect the written rows, then promote) or **straight into the
-good table**? If staging, create it with `CREATE TABLE ... AS SELECT * ... LIMIT 0` (CTAS mirrors the
-good table's columns/types/order exactly; `CREATE TABLE ... LIKE` is equivalent). The chosen target
-becomes the INSERT target; column classification always comes from the **good** table.
+Ask the user which write path they want, **spelling out both options and the recommendation** — don't
+ask a bare "how do you want to write these back?". Use words like:
 
-### Phase 7 — Generate the INSERT (Databricks builds it)
-Give the user the **INSERT-generator query** with placeholders filled: table identifiers, INSERT
-target, recovery column, the validated recovery expression (with **every single quote doubled** so it
-survives being embedded as a string literal), failing schema URI, app_id, window. It returns one cell —
-the full INSERT. Review it with them (recovery column carries the expression, failure column nulled,
-`load_tstamp` refreshed, column count matches). If the recovery column wasn't matched or the null-cast
-is rejected, see `troubleshooting/recovery-issues.md`.
+> "Validation passed. How would you like to write the recovered rows?
+> **1. Via a staging table (recommended)** — I insert into a temporary copy of your good table first,
+> you inspect the recovered rows there, then we promote them into the good atomic events table in one
+> step. Safest, and easy to abandon if anything looks off.
+> **2. Directly into the good table** — insert straight into `<good table>`. Faster, but the rows are
+> live immediately (Delta time travel is still available to compare before/after)."
+
+If they pick staging, create it with `CREATE TABLE ... AS SELECT * ... LIMIT 0` (CTAS mirrors the good
+table's columns/types/order exactly; `CREATE TABLE ... LIKE` is equivalent). The chosen target becomes
+the INSERT target; column classification always comes from the **good** table.
+
+### Phase 7 — Generate the INSERT (local script)
+Assemble the wide INSERT with **`scripts/generate_insert.py`** so no quote-laden SQL is copied out of
+a result cell. Do these one query at a time (see `templates/recovery-sql.md` for exact SQL and the
+full script invocation):
+1. Have the user run the two **column-metadata queries** (good and failed tables'
+   `information_schema.columns`, `ORDER BY ordinal_position`) and paste each result — plain
+   `column_name, full_data_type`, nothing quote-sensitive, so the copy is lossless.
+2. Write those pastes, a `config.json` (table identifiers, INSERT target, recovery column, failing
+   schema URI, app_id, window), and the **validated Phase-4 recovery expression** (single quotes stay
+   **single** — no doubling; it isn't embedded in a string literal) to files, and run the script. It
+   prints a sanity summary (column counts, pass-through, nulled) and writes the full INSERT to a
+   `.sql` file.
+
+Review the generated INSERT with the user (recovery column carries the expression, failure column
+nulled, `load_tstamp` refreshed, positional column order matches the good table). If the script warns
+the recovery column wasn't matched, or the null-cast on the failure column is rejected, see
+`troubleshooting/recovery-issues.md`.
+
+**Fallback (no local Python):** the **in-warehouse INSERT-generator query** (`templates/recovery-sql.md`)
+builds the same INSERT as a single result cell — but warn the user that Databricks' plain-text copy can
+strip its single quotes; they must copy from the expanded/raw cell and confirm the quotes survived
+before running.
 
 ### Phase 8 — Run, validate, promote
 If the duplicate pre-check was skipped in Phase 2 and there's any doubt, offer it once more. Run the

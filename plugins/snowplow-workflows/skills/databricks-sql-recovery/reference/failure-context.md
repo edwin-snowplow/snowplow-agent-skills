@@ -43,20 +43,21 @@ Fields of each failure struct:
 | `component_name` | Pipeline component that rejected the event |
 | `component_version` | |
 | `data` | Original event payload as a **JSON STRING** — read fields with `GET_JSON_OBJECT(data, '$.field')` |
-| `errors` | **Array** of error objects; each carries `source`, `path`, `keyword`, `message`, … — `source` is the key one (see below) |
+| `errors` | **`ARRAY<STRING>`** — each element is a **JSON-serialised** error object carrying `source`, `path`, `keyword`, `message`, …; read a field with `GET_JSON_OBJECT(errors[i], '$.field')`. `source` is the key one (see below) |
 | `failure_type` | e.g. `SchemaViolation` |
 | `schema` | Iglu URI of the schema that failed validation |
 | `timestamp` | When the failure occurred |
 
-## The `source` field — contexts vs unstruct (nested under `errors`, not top-level)
+## The `source` field — contexts vs unstruct (inside `errors`, which is `ARRAY<STRING>`)
 
 Whether the event failed as a **context entity** or the **self-describing (unstructured) event** is
-recorded on each error, at **`errors[0].source`** — *not* a top-level failure field (reading
-`...failure_1[0].source` returns NULL). Read it with
-`contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0].source`. *(The nested path is confirmed
-on Snowflake; on Databricks it's inferred — if `errors` is stored as a JSON string rather than a native
-`ARRAY<STRUCT>`, use `GET_JSON_OBJECT(contexts_..._failure_1[0].errors, '$[0].source')` instead. Confirm
-on the first real run.)* Values:
+recorded on each error's `source` — *not* a top-level failure field (reading `...failure_1[0].source`
+returns NULL). In Databricks `errors` is an **`ARRAY<STRING>`** whose elements are JSON strings, so you
+index the array **then** JSON-extract:
+`GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source')`. Do
+**not** dot into it — `errors[0].source` fails with `INVALID_EXTRACT_BASE_FIELD_TYPE … got STRING`
+because `errors[0]` is a JSON string, not a struct. (Confirmed against a live workspace 2026-07-27.)
+Values:
 
 - **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
   **ARRAY** column (this skill's main path).
