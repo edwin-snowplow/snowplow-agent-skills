@@ -175,8 +175,17 @@ unexpected nulls, values corrected. If anything fails, fix the expression and re
 (back to Phase 4). Diagnostics: `troubleshooting/recovery-issues.md`.
 
 ### Phase 6 — Choose the write path
-Ask: **staging table** (recommended — inspect the written rows, then promote) or **straight into the
-good table**? If staging, create it with the `CREATE TABLE ... AS SELECT * FROM <good> WHERE 1 = 0`
+Ask the user which write path they want, **spelling out both options and the recommendation** — don't
+ask a bare "how do you want to write these back?". Use words like:
+
+> "Validation passed. How would you like to write the recovered rows?
+> **1. Via a staging table (recommended)** — I insert into a temporary copy of your good table first,
+> you inspect the recovered rows there, then we promote them into the good atomic events table in one
+> step. Safest, and easy to abandon if anything looks off.
+> **2. Directly into the good table** — insert straight into `<good table>`. Faster, but the rows are
+> live immediately."
+
+If they pick staging, create it with the `CREATE TABLE ... AS SELECT * FROM <good> WHERE 1 = 0`
 pattern (mirrors columns/order exactly; ask for an S3 location and a staging table name). The chosen
 target becomes the INSERT target; column classification always comes from the **good-table** DESCRIBE.
 
