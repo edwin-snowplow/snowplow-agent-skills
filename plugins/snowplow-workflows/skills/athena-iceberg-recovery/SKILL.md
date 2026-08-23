@@ -302,8 +302,9 @@ also carried (a passing `contexts_*`) is preserved automatically via pass-throug
 in query context) with **no `_schema_version`**, while `contexts_*` columns are
 `array<struct<_schema_version ...>>`. Also corrected here — Athena's `errors` is `array(varchar)` (JSON
 strings), so `source` is `json_extract_scalar(errors[1], '$.source')`, **not** the struct access
-`errors[1].source` (which errors `not of type ROW`). The full reconstruction+INSERT still wants a live
-run on real unstruct failures.*
+`errors[1].source` (which errors `not of type ROW`); the corrected read returned
+`unstruct 122 / contexts 371 / atomic_field 5` on real data. The full reconstruction+INSERT still wants
+a live run on real unstruct failures.*
 
 ---
 
