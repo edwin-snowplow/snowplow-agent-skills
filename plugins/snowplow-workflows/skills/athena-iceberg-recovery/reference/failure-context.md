@@ -20,7 +20,7 @@ Fields of each failure ROW:
 | `component_name` | `VARCHAR` | Pipeline component that rejected the event |
 | `component_version` | `VARCHAR` | |
 | `data` | `VARCHAR` | Original event payload as a JSON string — read with `json_extract_scalar` |
-| `errors` | `ARRAY(ROW(...))` | Structured validation errors; each element carries `source`, `path`, `keyword`, `message`, … — `source` is the key one (see below) |
+| `errors` | `array(varchar)` | Each element is a **JSON string** (not a `ROW`) carrying `source`, `path`, `keyword`, `message`, … — read a field with `json_extract_scalar(errors[i], '$.field')`. `source` is the key one (see below) |
 | `failure_type` | `VARCHAR` | e.g. `SchemaViolation` |
 | `schema` | `VARCHAR` | Iglu URI of the schema that failed validation |
 | `timestamp` | `TIMESTAMP` | When the failure occurred |
@@ -28,9 +28,12 @@ Fields of each failure ROW:
 ## The `source` field — contexts vs unstruct (nested under `errors`, not top-level)
 
 Whether the event failed as a **context entity** or the **self-describing (unstructured) event** is
-recorded on each error, at **`errors[1].source`** (1-indexed, native `ROW` field) — *not* a top-level
-failure field (`...failure_1[1].source` doesn't exist). Read it with
-`contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1].source`. Values:
+recorded on each error's `source`. In Athena `errors` is an **`array(varchar)`** whose elements are
+JSON strings, so index the array (1-based) **then** JSON-extract — do **not** dot into it
+(`errors[1].source` fails with `Expression ... is not of type ROW`). Read it with
+`json_extract_scalar(contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1], '$.source')`.
+(Confirmed live on Athena 2026-08-23; the sample error object was
+`{"message":...,"source":"...","path":...,"keyword":...}`.) Values:
 
 - **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
   **ARRAY(ROW(...))** column (this skill's main path).
@@ -39,7 +42,8 @@ failure field (`...failure_1[1].source` doesn't exist). Read it with
   target column **and** a different reconstruction (`CAST(ROW(...) AS ROW(...))`, no outer `ARRAY[...]`).
   Its DESCRIBE struct usually has **no `_schema_version`** field (only `contexts_*` does) — match it,
   don't add one. Read/validate it directly (`<recovery_column>.field`) — no `[1]`, no `cardinality()`.
-  *(Confirmed live on Databricks + BigQuery; confirm Athena's own materialisation on the first real run.)*
+  *(Confirmed on Athena via DESCRIBE 2026-08-23: every `unstruct_event_*` is a single `struct<...>` with
+  no `_schema_version`; `contexts_*` are `array<struct<_schema_version ...>>`.)*
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
 through one recovery expression or one generator run: scope to one `source` (the script's

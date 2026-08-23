@@ -255,9 +255,10 @@ For Phase 7, set the generator's `<source>` predicate to `unstruct` and `<recove
 `unstruct_event_*` column. A schema that failed **both** ways is two separate runs, one per source. A
 valid entity the event also carried (a passing `contexts_*`) is preserved automatically via pass-through.
 
-*Ported from the Databricks + BigQuery builds (both validated live). Snowflake's own materialisation of
-the `unstruct_event_*` object (and whether it carries `_schema_version`) should be confirmed on the
-first real Snowflake run.*
+*Shape + source path confirmed live on Snowflake 2026-08-23: an `unstruct_event_*` value is a single
+`OBJECT` with **no `_schema_version`** key (checked `OBJECT_KEYS`/`TYPEOF`), and `errors[0]:source`
+returns `contexts`/`unstruct` on real failed rows. The full reconstruction + INSERT hasn't been run
+end-to-end yet — do that on the existing unstruct failures when you get time.*
 
 ---
 

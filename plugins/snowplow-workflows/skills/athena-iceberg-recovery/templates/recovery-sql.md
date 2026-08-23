@@ -63,7 +63,7 @@ so it returns a handful of rows, not a flood.
 ```sql
 SELECT
     contexts_com_snowplowanalytics_snowplow_failure_1[1].failure_type       AS failure_type,
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1].source   AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
+    json_extract_scalar(contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1], '$.source') AS source,  -- errors is array(varchar) JSON strings → JSON-extract; contexts vs unstruct, a mix = separate runs (see reference/failure-context.md)
     contexts_com_snowplowanalytics_snowplow_failure_1[1].errors             AS errors,
     contexts_com_snowplowanalytics_snowplow_failure_1[1].data               AS data
 FROM <failed_database>.<failed_table>

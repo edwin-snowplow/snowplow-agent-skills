@@ -161,12 +161,13 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
 
     # Optional source scoping (contexts vs unstruct). A schema can fail both as a
     # context entity and as the self-describing event; each is a separate run into
-    # its own column. errors[1].source is 1-based and native (no json extract).
+    # its own column. errors is array(varchar) of JSON strings (1-based), so read
+    # source with json_extract_scalar, not a struct field access.
     source_predicate = ""
     if cfg.get("FAILURE_SOURCE"):
         source_safe = cfg["FAILURE_SOURCE"].replace("'", "''")
         source_predicate = (
-            "      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1].source"
+            "      AND json_extract_scalar(contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1], '$.source')"
             f"\n          = '{source_safe}'\n"
         )
 

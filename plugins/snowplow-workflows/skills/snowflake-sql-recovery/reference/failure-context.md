@@ -40,7 +40,8 @@ recorded on each error, at **`errors[0]:source`** — it is **not** a top-level 
   `ARRAY_CONSTRUCT`). Read/validate it directly (`<recovery_column>:field`) — no `[0]`, no `ARRAY_SIZE`.
   On the Databricks/BigQuery loaders the event object carries **no `_schema_version`** key (only
   contexts objects do), so omit it unless a validated unstruct event shows it. *(Confirmed live on
-  Databricks + BigQuery; confirm Snowflake's own materialisation on the first real run.)*
+  Snowflake 2026-08-23: `unstruct_event_*` is a single `OBJECT` and its `OBJECT_KEYS` carry no
+  `_schema_version`; `errors[0]:source` returns `contexts`/`unstruct`.)*
 
 **One schema can fail both ways in the same window.** If the drill-in shows a mix of `contexts` and
 `unstruct` sources, they can't go through one recovery expression: scope the run to a single `source`
