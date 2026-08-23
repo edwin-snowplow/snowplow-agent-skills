@@ -303,8 +303,11 @@ in query context) with **no `_schema_version`**, while `contexts_*` columns are
 `array<struct<_schema_version ...>>`. Also corrected here — Athena's `errors` is `array(varchar)` (JSON
 strings), so `source` is `json_extract_scalar(errors[1], '$.source')`, **not** the struct access
 `errors[1].source` (which errors `not of type ROW`); the corrected read returned
-`unstruct 122 / contexts 371 / atomic_field 5` on real data. The full reconstruction+INSERT still wants
-a live run on real unstruct failures.*
+`unstruct 122 / contexts 371 / atomic_field 5` on real data. The **reconstruction form is proven** —
+a self-contained test ran `json_extract_scalar` → `CAST(ROW(...) AS ROW(...))` and got
+`row(nubmers bigint, true_or_false boolean, words varchar)` with `"12345"`→`bigint` coercion. Only an
+actual INSERT is unrun, blocked by data (the 122 existing unstruct fails are an empty `missing_event`
+schema with no target column), not by the port.*
 
 ---
 
