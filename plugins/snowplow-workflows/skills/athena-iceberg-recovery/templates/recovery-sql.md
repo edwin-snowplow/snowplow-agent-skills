@@ -130,9 +130,12 @@ Decide, per field: any `_uncoercible > 0` → **stop, list the offending rows, a
 
 ## Recovery expression pattern (Phase 4) — build & confirm with the user
 
-Reconstruct the repaired entity as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`, mapping each
+The shape depends on the failure **source** (from the drill-in), mapping each
 `json_extract_scalar(failure_data, '$.field')` to its target field/type in the **same order** as the
-good-table struct. `_schema_version` is the first field.
+good-table struct.
+
+**contexts source** — `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`. `_schema_version` is the first field
+(the `contexts_*` struct in DESCRIBE lists it):
 
 ```sql
 CAST(
@@ -146,9 +149,22 @@ CAST(
 AS ARRAY(ROW(_schema_version VARCHAR, field1 VARCHAR, field2 BIGINT)))
 ```
 
-Entity columns must be constructed as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`.
-The `ARRAY<STRUCT<...>>` form in DESCRIBE output is DDL-only and invalid in a query.
-Do **not** append `AS <column_name>` here — the generator adds it.
+**unstruct source** — a **single `CAST(ROW(...) AS ROW(...))`, no outer `ARRAY[...]`/`ARRAY(...)`** (the
+`unstruct_event_*` column is a single `ROW`). Its DESCRIBE struct typically has **no `_schema_version`**
+field (only `contexts_*` does) — omit it unless DESCRIBE lists it:
+
+```sql
+CAST(
+    ROW(
+        CAST(json_extract_scalar(failure_data, '$.field1') AS VARCHAR),
+        CAST(json_extract_scalar(failure_data, '$.field2') AS BIGINT)
+    )
+AS ROW(field1 VARCHAR, field2 BIGINT))
+```
+
+Entity columns must be constructed with `CAST(... AS ARRAY(ROW(...)))` (contexts) or `CAST(... AS
+ROW(...))` (unstruct). The `ARRAY<STRUCT<...>>` / `STRUCT<...>` form in DESCRIBE output is DDL-only and
+invalid in a query. Do **not** append `AS <column_name>` here — the generator adds it.
 
 ---
 
@@ -179,9 +195,10 @@ FROM unnested
 ```
 
 `typeof()` returns the type as a string, e.g.
-`array(row(_schema_version varchar, numbers bigint, true_or_false boolean, words varchar))`.
-Compare it field-for-field against the good-table column type (validation checklist:
-`reference/column-classification-and-validation.md`).
+`array(row(_schema_version varchar, numbers bigint, true_or_false boolean, words varchar))` for a
+contexts run, or `row(numbers bigint, true_or_false boolean, words varchar)` (no outer `array(...)`,
+no `_schema_version`) for an unstruct run. Compare it field-for-field against the good-table column type
+(validation checklist: `reference/column-classification-and-validation.md`).
 
 ---
 
@@ -257,7 +274,9 @@ the good-table DESCRIBE).
 ```sql
 SELECT COUNT(*) AS rows_in_staging FROM <staging_database>.<staging_table>;
 
-SELECT event_id, <recovery_column>[1]
+-- contexts source (ARRAY column):  SELECT event_id, <recovery_column>[1] ...   (1-based)
+-- unstruct source (ROW column):    SELECT event_id, <recovery_column>    ...   (no [1])
+SELECT event_id, <recovery_column>
 FROM <staging_database>.<staging_table>
 LIMIT 10;
 ```

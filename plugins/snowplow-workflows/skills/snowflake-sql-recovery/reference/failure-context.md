@@ -37,13 +37,20 @@ recorded on each error, at **`errors[0]:source`** — it is **not** a top-level 
 - **`unstruct`** — the *same* schema failed as the self-describing event → recovers into the
   `unstruct_event_<vendor>_<name>_<major>` column, which is a **single OBJECT**, not an array — a
   different target column **and** a different expression shape (`OBJECT_CONSTRUCT(...)`, no
-  `ARRAY_CONSTRUCT`).
+  `ARRAY_CONSTRUCT`). Read/validate it directly (`<recovery_column>:field`) — no `[0]`, no `ARRAY_SIZE`.
+  On the Databricks/BigQuery loaders the event object carries **no `_schema_version`** key (only
+  contexts objects do), so omit it unless a validated unstruct event shows it. *(Confirmed live on
+  Databricks + BigQuery; confirm Snowflake's own materialisation on the first real run.)*
 
 **One schema can fail both ways in the same window.** If the drill-in shows a mix of `contexts` and
 `unstruct` sources, they can't go through one recovery expression: scope the run to a single `source`
 (`...errors[0]:source::STRING = 'contexts'`), recover it, then handle the other `source` as a separate
 run into its own column. Always read `source` via the `errors[0]:source` path — never the top-level
 guess.
+
+**Valid entities the failed event also carried are preserved.** The failed-events table keeps a passing
+attached entity in its own column, so the recovery's pass-through carries it into the good row
+untouched. Recover only what failed; do **not** null the sibling entity columns.
 
 ## Navigation rules (and why)
 

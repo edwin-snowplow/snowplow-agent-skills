@@ -132,6 +132,8 @@ way to see them is to pull a recent **validated** event of the same entity from 
 and read its keys and value types. Use this before building the recovery expression whenever the
 intended types aren't already obvious. `<recovery_column>` is the entity column found above.
 
+**contexts source** — the column is a VARIANT **array** of objects, so index element 0:
+
 ```sql
 SELECT
     event_id,
@@ -141,6 +143,20 @@ SELECT
 FROM <good_database>.<good_schema>.<good_table>
 WHERE <recovery_column> IS NOT NULL
   AND ARRAY_SIZE(<recovery_column>) > 0
+LIMIT 10;
+```
+
+**unstruct source** — the `unstruct_event_*` column is a **single VARIANT object, not an array**. Drop
+the `[0]` and `ARRAY_SIZE`; read the object directly:
+
+```sql
+SELECT
+    event_id,
+    <recovery_column>                                 AS validated_entity,
+    TYPEOF(<recovery_column>:field1)                  AS field1_type,
+    TYPEOF(<recovery_column>:field2)                  AS field2_type
+FROM <good_database>.<good_schema>.<good_table>
+WHERE <recovery_column> IS NOT NULL
 LIMIT 10;
 ```
 
@@ -183,8 +199,10 @@ decision table: `reference/column-classification-and-validation.md`.
 
 ## Recovery expression pattern (Phase 4) — build & confirm with the user
 
-Reconstruct the repaired entity as a VARIANT array of objects. `_schema_version` is **mandatory**
-(first key) for the Snowflake Streaming Loader. Cast each field with `::TYPE`.
+The shape depends on the failure **source** (from the drill-in). Cast each field with `::TYPE`.
+
+**contexts source** — reconstruct as a VARIANT **array of one object**. `_schema_version` is the first
+key (the loader writes it into contexts objects):
 
 ```sql
 ARRAY_CONSTRUCT(
@@ -196,10 +214,22 @@ ARRAY_CONSTRUCT(
 )
 ```
 
-There is no strict struct-type matching in Snowflake, so no field-order or reserved-word concerns —
-the keys are plain string literals. Do **not** append `AS <column_name>` here — the generator adds
-it. When embedding this into the generator query's string literal (Phase 7), **double every single
-quote** (`'` → `''`).
+**unstruct source** — reconstruct as a **single `OBJECT_CONSTRUCT(...)`, no outer `ARRAY_CONSTRUCT`**
+(the `unstruct_event_*` column is a single VARIANT object). Match a validated unstruct event's keys:
+on the Databricks and BigQuery loaders the self-describing event object carries **no `_schema_version`**
+(only contexts objects do), so omit it unless a validated event shows it:
+
+```sql
+OBJECT_CONSTRUCT(
+    'field1', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:field1::STRING,
+    'field2', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:field2::INTEGER
+)
+```
+
+There is no strict struct-type matching in Snowflake (columns are VARIANT), so no field-order or
+reserved-word concerns — the keys are plain string literals. Do **not** append `AS <column_name>` here
+— the generator adds it. When embedding this into the generator query's string literal (Phase 7),
+**double every single quote** (`'` → `''`).
 
 ## Test SELECT + type validation (Phase 4 — run and validate before the INSERT)
 
@@ -218,6 +248,7 @@ WITH prep AS (
     WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
       AND app_id = '<app_id>'
       AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
+      -- add for a mixed-source schema: AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors[0]:source::STRING = '<source>'
 ),
 recovered_rows AS (
     SELECT
@@ -228,6 +259,8 @@ recovered_rows AS (
 SELECT
     event_id,
     recovered,
+    -- contexts source (recovered is an ARRAY): TYPEOF(recovered[0]:field1)
+    -- unstruct source (recovered is an OBJECT): TYPEOF(recovered:field1)  -- no [0]
     TYPEOF(recovered[0]:field1)        AS field1_type,
     TYPEOF(recovered[0]:field2)        AS field2_type
 FROM recovered_rows
@@ -236,7 +269,9 @@ LIMIT 20;
 
 `TYPEOF()` returns a VARIANT value's type as a string, e.g. `INTEGER`, `VARCHAR`, `BOOLEAN`. Because
 Snowflake raises an error on a failed `::TYPE` cast, a test SELECT that runs at all already proves
-the casts hold. (Validation checklist: see `reference/column-classification-and-validation.md`.)
+the casts hold. For an **unstruct** run the reconstructed value is a single OBJECT, so read its fields
+with `recovered:field` (no `[0]`). (Validation checklist: see
+`reference/column-classification-and-validation.md`.)
 
 ---
 
@@ -292,6 +327,7 @@ SELECT
     || '    WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL ''<days> DAY''\n'
     || '      AND app_id = ''<app_id>''\n'
     || '      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = ''<failing_schema_uri>''\n'
+    || '      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors[0]:source::STRING = ''<source>''\n'
     || ')\n'
     || 'SELECT\n    '
     || columns_sql
@@ -306,7 +342,14 @@ Notes:
 - The generated INSERT is **positional** (no explicit column list): the SELECT expressions are
   emitted in good-table `ordinal_position` order, so they land in the right columns.
 - The `<recovery_expression_with_doubled_quotes>` is the Phase-4 recovery expression with every `'`
-  replaced by `''`, because it lives inside a SQL string literal here.
+  replaced by `''`, because it lives inside a SQL string literal here. `<recovery_column>` is the
+  `contexts_*` column for a contexts run or the `unstruct_event_*` column for an unstruct run (whose
+  expression is the single `OBJECT_CONSTRUCT(...)`, no `ARRAY_CONSTRUCT`).
+- `<source>` scopes `prep` to one failure source — `contexts` or `unstruct`. A schema that failed both
+  ways is two separate runs, one per source, each into its own column. Drop this predicate only when the
+  drill-in showed a single source.
+- Sibling entity columns (other `contexts_*`) **pass through** by name, so a valid entity the event
+  also carried is preserved in the recovered row — not nulled.
 - Before the user runs the generated INSERT, review it: recovery column carries the expression,
   failure column nulled, `load_tstamp` refreshed, and the column count matches the good table. If
   the recovery column wasn't matched (its expression is missing), check `<recovery_column>` against
@@ -335,7 +378,9 @@ still comes from the good table).
 ```sql
 SELECT COUNT(*) AS rows_in_staging FROM <staging_database>.<staging_schema>.<staging_table>;
 
-SELECT event_id, <recovery_column>[0]
+-- contexts source (ARRAY column):  SELECT event_id, <recovery_column>[0] ...
+-- unstruct source (OBJECT column): SELECT event_id, <recovery_column>    ...  (no [0])
+SELECT event_id, <recovery_column>
 FROM <staging_database>.<staging_schema>.<staging_table>
 LIMIT 10;
 ```

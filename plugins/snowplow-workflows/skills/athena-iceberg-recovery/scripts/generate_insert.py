@@ -16,6 +16,11 @@ Usage:
 config.json keys:
     GOOD_DATABASE, GOOD_TABLE, FAILED_DATABASE, FAILED_TABLE,
     RECOVERY_COLUMN, FAILED_SCHEMA, APP_ID, DAYS_LOOKBACK
+    FAILURE_SOURCE  (optional) — 'contexts' or 'unstruct'. When set, scopes prep to
+        rows whose failure source matches (errors[1].source), so a schema that failed
+        both ways recovers one source per run into its own column. Omit for a
+        single-source schema. RECOVERY_COLUMN is the contexts_* column for a contexts
+        run or the unstruct_event_* column for an unstruct run.
     TARGET_DATABASE, TARGET_TABLE  (optional) — where the INSERT writes. Defaults to
         GOOD_DATABASE/GOOD_TABLE. Set these to a staging table when using the staging path;
         column classification still comes from the good-table DESCRIBE, so the staging table
@@ -154,6 +159,17 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
     target_db = cfg.get("TARGET_DATABASE") or cfg["GOOD_DATABASE"]
     target_tbl = cfg.get("TARGET_TABLE") or cfg["GOOD_TABLE"]
 
+    # Optional source scoping (contexts vs unstruct). A schema can fail both as a
+    # context entity and as the self-describing event; each is a separate run into
+    # its own column. errors[1].source is 1-based and native (no json extract).
+    source_predicate = ""
+    if cfg.get("FAILURE_SOURCE"):
+        source_safe = cfg["FAILURE_SOURCE"].replace("'", "''")
+        source_predicate = (
+            "      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1].source"
+            f"\n          = '{source_safe}'\n"
+        )
+
     sql = (
         f"INSERT INTO {target_db}.{target_tbl} (\n    "
         + ",\n    ".join(insert_cols)
@@ -161,7 +177,9 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
         + f"{cfg['FAILED_DATABASE']}.{cfg['FAILED_TABLE']}\n"
         + f"    WHERE {time_filter(cfg)}\n"
         + f"      AND app_id = '{app_id_safe}'\n"
-        + f"      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema\n          = '{schema_safe}'\n),\n"
+        + f"      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema\n          = '{schema_safe}'\n"
+        + source_predicate
+        + "),\n"
         + "unnested AS (\n    SELECT\n        prep.*,\n        failure_ctx.data AS failure_data\n    FROM prep\n"
         + "    CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)\n)\n"
         + "SELECT\n    " + ",\n    ".join(select_exprs) + "\nFROM unnested;"

@@ -137,19 +137,29 @@ a guessed value:
    validated row exists yet, fall back to the Iglu schema JSON). This grounds the target field types —
    never the failed payload.
 
-Only now build the **recovery expression** — `ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('_schema_version',
-'<ver>', '<field>', <path>::<TYPE>, ...))` — with `_schema_version` first (mandatory for the Streaming
-Loader) and one `::TYPE` cast per field. Emit the **test SELECT** using the template's two-CTE form —
-build `recovered` in a CTE, then `TYPEOF(recovered[0]:<field>)` in the outer query (`TYPEOF()` needs a
-VARIANT, so it can't wrap a `::TYPE` cast directly). **Do not generate the INSERT yet** — have the user
-run it and paste output back.
+Only now build the **recovery expression**, one `::TYPE` cast per field. The shape depends on the
+Phase-2 **source**:
+- **contexts** → `ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('_schema_version', '<ver>', '<field>', <path>::<TYPE>, ...))`
+  — `_schema_version` first (the loader writes it into contexts objects), into the `contexts_*` column.
+- **unstruct** → a single `OBJECT_CONSTRUCT('<field>', <path>::<TYPE>, ...)` with **no outer
+  `ARRAY_CONSTRUCT`**, into the `unstruct_event_*` column (a single VARIANT object). Match a validated
+  unstruct event's keys — on the Databricks/BigQuery loaders the event object carries **no
+  `_schema_version`** (only contexts objects do), so omit it unless a validated event shows it. (Both
+  forms in `templates/recovery-sql.md`.)
+
+Emit the **test SELECT** using the template's two-CTE form — build `recovered` in a CTE, then
+`TYPEOF(recovered[0]:<field>)` for contexts (or `TYPEOF(recovered:<field>)` for unstruct, since
+`recovered` is then an OBJECT not an array) in the outer query (`TYPEOF()` needs a VARIANT, so it can't
+wrap a `::TYPE` cast directly). **Do not generate the INSERT yet** — have the user run it and paste
+output back.
 
 ### Phase 5 — Validate (gate — do not skip)
 Check the pasted output against the validation gate in
 `reference/column-classification-and-validation.md`: the query **ran clean** (decisive — Phase 3.5
 proved coercibility and `::TYPE` errors rather than silent-NULL), `TYPEOF()` matches the intended
-types, `_schema_version` present, row count matches, no unexpected nulls, values corrected. If
-anything fails, fix the expression and re-emit the test SELECT (back to Phase 4). Diagnostics:
+types, `_schema_version` present **for a contexts run** (a contexts object carries it; an unstruct
+object usually does not — match the validated event), row count matches, no unexpected nulls, values
+corrected. If anything fails, fix the expression and re-emit the test SELECT (back to Phase 4). Diagnostics:
 `troubleshooting/recovery-issues.md`.
 
 ### Phase 6 — Choose the write path
@@ -169,10 +179,13 @@ exactly). The chosen target becomes the INSERT target; column classification alw
 
 ### Phase 7 — Generate the INSERT (Snowflake builds it)
 Give the user the **INSERT-generator query** with placeholders filled: table identifiers, INSERT
-target, recovery column, the validated recovery expression (single quotes doubled `''`), failing
-schema URI, app_id, window. It returns one cell — the full INSERT. Review it with them (recovery
-column carries the expression, failure column nulled, `load_tstamp` refreshed, column count matches).
-If the recovery column wasn't matched, see `troubleshooting/recovery-issues.md`.
+target, recovery column (`contexts_*` or `unstruct_event_*`), the validated recovery expression (single
+quotes doubled `''`), failing schema URI, app_id, window, and the **`<source>` predicate** (`contexts`
+or `unstruct`) scoping `prep` to the source you're recovering — so a schema that failed both ways is two
+runs into two columns. It returns one cell — the full INSERT. Review it with them (recovery column
+carries the expression, failure column nulled, `load_tstamp` refreshed, column count matches; sibling
+entity columns pass through, so a valid entity the event also carried is preserved, not nulled). If the
+recovery column wasn't matched, see `troubleshooting/recovery-issues.md`.
 
 ### Phase 8 — Run, validate, promote
 If the duplicate pre-check was skipped in Phase 2 and there's any doubt, offer it once more. Run the
@@ -221,6 +234,30 @@ Two things must be true before the INSERT can land — confirm both:
 
 **Only bail out** when the schema genuinely can't be made to resolve or no target column can exist.
 Diagnostics: `troubleshooting/recovery-issues.md`.
+
+---
+
+## Recovering an unstruct (self-describing event) failure
+
+Same 8-phase flow, targeting the **self-describing event** instead of a context entity. The drill-in
+`source = unstruct` means the schema failed as the event body, recovering into the
+`unstruct_event_<vendor>_<name>_<major>` column. Four things differ from the contexts path — everything
+else (identification, profiling gate, the generator, pass-through, validation) is identical:
+
+1. **Target column is a single VARIANT object, not an array of objects.**
+2. **Reconstruct with a bare `OBJECT_CONSTRUCT(...)`** — no outer `ARRAY_CONSTRUCT`.
+3. **Usually no `_schema_version` key.** On the Databricks/BigQuery loaders the event object omits it
+   (only contexts objects carry it) — match a validated unstruct event and omit it unless it shows.
+4. **Inspection/validation read the object directly** — `recovered:field` / `<recovery_column>:field`,
+   no `[0]` and no `ARRAY_SIZE`.
+
+For Phase 7, set the generator's `<source>` predicate to `unstruct` and `<recovery_column>` to the
+`unstruct_event_*` column. A schema that failed **both** ways is two separate runs, one per source. A
+valid entity the event also carried (a passing `contexts_*`) is preserved automatically via pass-through.
+
+*Ported from the Databricks + BigQuery builds (both validated live). Snowflake's own materialisation of
+the `unstruct_event_*` object (and whether it carries `_schema_version`) should be confirmed on the
+first real Snowflake run.*
 
 ---
 

@@ -37,10 +37,17 @@ failure field (`...failure_1[1].source` doesn't exist). Read it with
 - **`unstruct`** — the *same* schema failed as the self-describing event → recovers into the
   `unstruct_event_<vendor>_<name>_<major>` column, a **single `ROW`** (not an array) — a different
   target column **and** a different reconstruction (`CAST(ROW(...) AS ROW(...))`, no outer `ARRAY[...]`).
+  Its DESCRIBE struct usually has **no `_schema_version`** field (only `contexts_*` does) — match it,
+  don't add one. Read/validate it directly (`<recovery_column>.field`) — no `[1]`, no `cardinality()`.
+  *(Confirmed live on Databricks + BigQuery; confirm Athena's own materialisation on the first real run.)*
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
-through one recovery expression or one generator run: scope to one `source`, recover it, then handle
-the other as a separate run into its own column.
+through one recovery expression or one generator run: scope to one `source` (the script's
+`FAILURE_SOURCE`), recover it, then handle the other as a separate run into its own column.
+
+**Valid entities the failed event also carried are preserved.** The failed-events table keeps a passing
+attached entity in its own column, so the script's pass-through carries it into the good row untouched.
+Recover only what failed; do **not** null the sibling entity columns.
 
 ## Navigation rules (and why)
 

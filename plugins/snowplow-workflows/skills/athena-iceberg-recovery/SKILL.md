@@ -163,9 +163,14 @@ field type:
    don't re-ask for the name). From it, read the exact recovery column and its `ROW(...)` field names,
    types, and **order**. If the entity isn't in the DESCRIBE yet (brand-new schema), fall back to the
    Iglu schema JSON.
-2. Only now build the **recovery expression** as `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))` (never the
-   DDL `ARRAY<STRUCT<...>>`), mapping each `json_extract_scalar(failure_data, '$.field')` to its target
-   field/type in the good-table struct's order, `_schema_version` first (`reference/failure-context.md`).
+2. Only now build the **recovery expression**, mapping each `json_extract_scalar(failure_data, '$.field')`
+   to its target field/type in the good-table struct's order. The shape depends on the Phase-2 **source**:
+   - **contexts** → `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`, `_schema_version` first (the `contexts_*`
+     struct lists it).
+   - **unstruct** → a single `CAST(ROW(...) AS ROW(...))` with **no outer `ARRAY[...]`/`ARRAY(...)`**,
+     into the `unstruct_event_*` column. Its DESCRIBE struct usually has **no `_schema_version`** field —
+     omit it unless DESCRIBE lists it. (Never the DDL `ARRAY<STRUCT<...>>`/`STRUCT<...>` form — that's
+     invalid in a query.) Both forms in `templates/recovery-sql.md`.
 
 Emit the **test SELECT** (event_id + reconstructed column + `typeof(...)`). **Do not generate the
 INSERT yet** — have the user run it and paste output back.
@@ -200,8 +205,11 @@ deterministic:
 
 1. Write four input files (in a temp/working dir):
    - `config.json` — keys `GOOD_DATABASE`, `GOOD_TABLE`, `FAILED_DATABASE`, `FAILED_TABLE`,
-     `RECOVERY_COLUMN`, `FAILED_SCHEMA`, `APP_ID`, `DAYS_LOOKBACK`. **For the staging path**, also set
-     `TARGET_DATABASE`/`TARGET_TABLE` to the staging table (defaults to the good table if omitted).
+     `RECOVERY_COLUMN` (the `contexts_*` or `unstruct_event_*` column), `FAILED_SCHEMA`, `APP_ID`,
+     `DAYS_LOOKBACK`. Set **`FAILURE_SOURCE`** (`contexts`/`unstruct`) when the schema failed both ways —
+     it scopes `prep` to that source, so each source recovers into its own column in a separate run;
+     omit for a single-source schema. **For the staging path**, also set `TARGET_DATABASE`/`TARGET_TABLE`
+     to the staging table (defaults to the good table if omitted).
    - `good_describe.txt` / `failed_describe.txt` — the raw pasted DESCRIBE outputs
    - `recovery_expression.sql` — the validated recovery expression (no trailing `AS <column>`)
 2. Run:
@@ -269,6 +277,30 @@ Two things must be true before the INSERT can land — confirm both:
 
 **Only bail out** when the schema genuinely can't be made to resolve or no target column can exist.
 Diagnostics: `troubleshooting/recovery-issues.md`.
+
+---
+
+## Recovering an unstruct (self-describing event) failure
+
+Same 8-phase flow, targeting the **self-describing event** instead of a context entity. The drill-in
+`source = unstruct` means the schema failed as the event body, recovering into the
+`unstruct_event_<vendor>_<name>_<major>` column. Four things differ from the contexts path — everything
+else (identification, profiling gate, the script, pass-through, validation) is identical:
+
+1. **Target column is a single `ROW`, not `ARRAY(ROW(...))`.** Read its field names/types/order from the
+   good-table `DESCRIBE`.
+2. **Reconstruct with a single `CAST(ROW(...) AS ROW(...))`** — no outer `ARRAY[...]`/`ARRAY(...)`.
+3. **No `_schema_version`.** The `unstruct_event_*` DESCRIBE struct usually omits it; match the struct.
+4. **Inspection/validation read the row directly** — `<recovery_column>` / `<recovery_column>.field`,
+   no `[1]` and no `cardinality()`.
+
+For Phase 7, set the script's `FAILURE_SOURCE = unstruct` and `RECOVERY_COLUMN` to the `unstruct_event_*`
+column. A schema that failed **both** ways is two separate runs, one per source. A valid entity the event
+also carried (a passing `contexts_*`) is preserved automatically via pass-through.
+
+*Ported from the Databricks + BigQuery builds (both validated live). Athena/Iceberg's own
+materialisation of the `unstruct_event_*` `ROW` (and whether it carries `_schema_version`) should be
+confirmed on the first real Athena run.*
 
 ---
 
