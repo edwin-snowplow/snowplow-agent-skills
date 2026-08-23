@@ -39,6 +39,9 @@ time.
 
 ## Where the knowledge lives (read the form you need, when you need it)
 
+- **`OVERVIEW.md`** — a plain-language summary of what this skill does, for the **user** (not recovery
+  instructions). If they want to understand the process, or ask "what does this do?", share or read from it.
+
 - **`templates/recovery-sql.md`** — every SQL statement, with placeholders. The thing you actually
   hand the user at each phase.
 - **`reference/failure-context.md`** — the failure column's structure and how to navigate/extract it
