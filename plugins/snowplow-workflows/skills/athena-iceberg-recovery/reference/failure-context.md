@@ -32,8 +32,7 @@ recorded on each error's `source`. In Athena `errors` is an **`array(varchar)`**
 JSON strings, so index the array (1-based) **then** JSON-extract — do **not** dot into it
 (`errors[1].source` fails with `Expression ... is not of type ROW`). Read it with
 `json_extract_scalar(contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1], '$.source')`.
-(Confirmed live on Athena 2026-08-23; the sample error object was
-`{"message":...,"source":"...","path":...,"keyword":...}`.) Values:
+Each element is a JSON object like `{"message":...,"source":"...","path":...,"keyword":...}`. Values:
 
 - **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
   **ARRAY(ROW(...))** column (this skill's main path).
@@ -42,8 +41,8 @@ JSON strings, so index the array (1-based) **then** JSON-extract — do **not** 
   target column **and** a different reconstruction (`CAST(ROW(...) AS ROW(...))`, no outer `ARRAY[...]`).
   Its DESCRIBE struct usually has **no `_schema_version`** field (only `contexts_*` does) — match it,
   don't add one. Read/validate it directly (`<recovery_column>.field`) — no `[1]`, no `cardinality()`.
-  *(Confirmed on Athena via DESCRIBE 2026-08-23: every `unstruct_event_*` is a single `struct<...>` with
-  no `_schema_version`; `contexts_*` are `array<struct<_schema_version ...>>`.)*
+  (In DESCRIBE, every `unstruct_event_*` shows as a single `struct<...>`, while `contexts_*` are
+  `array<struct<_schema_version ...>>`.)
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
 through one recovery expression or one generator run: scope to one `source` (the script's

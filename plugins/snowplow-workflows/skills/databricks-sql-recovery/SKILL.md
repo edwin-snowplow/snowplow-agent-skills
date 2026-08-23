@@ -292,10 +292,6 @@ into its own column — `FAILURE_SOURCE` keeps them from bleeding together. And 
 *also* carried (e.g. a passing `contexts_*`) is preserved automatically: the failed-events table keeps
 it in its own column, and the recovery passes that column through untouched.
 
-Confirmed live against `iglu:gcp.sandbox/Alana-Test/jsonschema/1-0-0`: `unstruct_event_*` was
-`struct<nubmers:bigint,true_or_false:boolean,words:string>` (no `_schema_version`), and the recovered
-rows kept the valid `contexts_*` entity alongside the reconstructed event.
-
 ---
 
 ## When this skill is *not* the right answer

@@ -56,8 +56,7 @@ returns NULL). In Databricks `errors` is an **`ARRAY<STRING>`** whose elements a
 index the array **then** JSON-extract:
 `GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source')`. Do
 **not** dot into it — `errors[0].source` fails with `INVALID_EXTRACT_BASE_FIELD_TYPE … got STRING`
-because `errors[0]` is a JSON string, not a struct. (Confirmed against a live workspace 2026-07-27.)
-Values:
+because `errors[0]` is a JSON string, not a struct. Values:
 
 - **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
   **ARRAY** column (this skill's main path).
@@ -67,8 +66,7 @@ Values:
   **The unstruct struct usually has no `_schema_version` field** (the `contexts_*` struct does): match
   the `unstruct_event_*` `full_data_type` and omit `_schema_version` unless it lists it. Inspection and
   validation read the column directly — no `[0]`, no `size()` (both error on a struct); filter on
-  `IS NOT NULL`. (Confirmed live 2026-08-23: `unstruct_event_gcp_sandbox_alana_test_1` was
-  `struct<nubmers:bigint,true_or_false:boolean,words:string>`.)
+  `IS NOT NULL`.
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
 through one recovery expression: scope the run to one `source` (the script's `FAILURE_SOURCE`), recover
@@ -77,8 +75,7 @@ it, then handle the other as a separate run into its own column.
 **Valid entities the failed event also carried are preserved.** The failed-events table materialises a
 valid attached entity in its own column (e.g. a passing `contexts_*`), so the recovery's pass-through
 carries it into the good row untouched. Recover only what failed; do **not** null the sibling entity
-columns. (Confirmed live 2026-08-23: `source=unstruct` rows kept a valid `contexts_*` entity, which
-landed intact alongside the reconstructed event.)
+columns.
 
 ## Navigation rules (and why)
 

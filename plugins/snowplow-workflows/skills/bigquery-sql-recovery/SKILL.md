@@ -250,11 +250,6 @@ For Phase 7, set the generator's `<source>` predicate to `unstruct` and `<recove
 `unstruct_event_*` column. A schema that failed **both** ways is two separate runs, one per source. A
 valid entity the event also carried (a passing `contexts_*`) is preserved automatically via pass-through.
 
-*Confirmed live on BigQuery 2026-08-23: `unstruct_event_gcp_sandbox_alana_test_1` was
-`STRUCT<nubmers INT64, true_or_false BOOL, words STRING>` (single struct, no `_schema_version`); the
-`SAFE_OFFSET(0)` source path returned `unstruct`; and a full recovery landed 10 rows with the
-reconstructed event plus the preserved valid `contexts_*` entity.*
-
 ---
 
 ## When this skill is *not* the right answer

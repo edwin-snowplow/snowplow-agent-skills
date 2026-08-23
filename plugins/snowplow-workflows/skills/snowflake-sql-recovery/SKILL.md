@@ -255,13 +255,6 @@ For Phase 7, set the generator's `<source>` predicate to `unstruct` and `<recove
 `unstruct_event_*` column. A schema that failed **both** ways is two separate runs, one per source. A
 valid entity the event also carried (a passing `contexts_*`) is preserved automatically via pass-through.
 
-*Confirmed live on Snowflake 2026-08-23: an `unstruct_event_*` value is a single `OBJECT` with **no
-`_schema_version`** key (`OBJECT_KEYS`/`TYPEOF`), and `errors[0]:source` returns `contexts`/`unstruct`
-on real failed rows. The **reconstruction form is proven** — a self-contained test ran
-`OBJECT_CONSTRUCT('nubmers', ...::INTEGER, ...)` and got a single `OBJECT` with keys
-`nubmers/true_or_false/words` (no `_schema_version`) and `"12345"`→`INTEGER` coercion. Only an actual
-INSERT is unrun; the 16 existing unstruct fails are available for it when you get time.*
-
 ---
 
 ## When this skill is *not* the right answer

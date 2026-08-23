@@ -30,8 +30,8 @@ Whether the event failed as a **context entity** or the **self-describing (unstr
 recorded on each error, at **`errors[SAFE_OFFSET(0)].source`** — *not* a top-level failure field
 (reading `...failure_1[SAFE_OFFSET(0)].source` returns NULL). Read it with
 `JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors[SAFE_OFFSET(0)].source)`.
-*(Confirmed live on BigQuery 2026-08-23: `errors` is `ARRAY<JSON>`, so index the array with
-`SAFE_OFFSET(0)` and then JSON-navigate `.source`.)* Values:
+(`errors` is `ARRAY<JSON>`, so index the array with `SAFE_OFFSET(0)` and then JSON-navigate `.source`.)
+Values:
 
 - **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
   **ARRAY** column (this skill's main path).
@@ -40,8 +40,7 @@ recorded on each error, at **`errors[SAFE_OFFSET(0)].source`** — *not* a top-l
   target column **and** a different reconstruction: a bare `STRUCT(...)`, no array brackets. The
   `unstruct_event_*` `data_type` usually has **no `_schema_version`** field (the `contexts_*` struct
   does) — match it, don't add one. Inspection/validation read the column directly — no `[0]`,
-  `[OFFSET(0)]`, or `ARRAY_LENGTH` (all error on a struct); filter `IS NOT NULL`. *(Shape confirmed
-  live on Databricks; confirm BigQuery's own materialisation on the first real run.)*
+  `[OFFSET(0)]`, or `ARRAY_LENGTH` (all error on a struct); filter `IS NOT NULL`.
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
 through one recovery expression: scope the run to one `source` (the generator's `<source>` predicate),
@@ -49,8 +48,7 @@ recover it, then handle the other as a separate run into its own column.
 
 **Valid entities the failed event also carried are preserved.** The failed-events table materialises a
 passing attached entity in its own column, so the recovery's pass-through carries it into the good row
-untouched. Recover only what failed; do **not** null the sibling entity columns. (Confirmed live on
-Databricks 2026-08-23; the same pass-through applies here.)
+untouched. Recover only what failed; do **not** null the sibling entity columns.
 
 ## Navigation rules (and why)
 
