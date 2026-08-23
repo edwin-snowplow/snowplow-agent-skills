@@ -64,10 +64,21 @@ Values:
 - **`unstruct`** — the *same* schema failed as the self-describing event → recovers into the
   `unstruct_event_<vendor>_<name>_<major>` column, a **single STRUCT** (not an array) — a different
   target column **and** a different reconstruction (`NAMED_STRUCT(...)`, no outer `ARRAY(...)`).
+  **The unstruct struct usually has no `_schema_version` field** (the `contexts_*` struct does): match
+  the `unstruct_event_*` `full_data_type` and omit `_schema_version` unless it lists it. Inspection and
+  validation read the column directly — no `[0]`, no `size()` (both error on a struct); filter on
+  `IS NOT NULL`. (Confirmed live 2026-08-23: `unstruct_event_gcp_sandbox_alana_test_1` was
+  `struct<nubmers:bigint,true_or_false:boolean,words:string>`.)
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
-through one recovery expression: scope the run to one `source`, recover it, then handle the other as a
-separate run into its own column.
+through one recovery expression: scope the run to one `source` (the script's `FAILURE_SOURCE`), recover
+it, then handle the other as a separate run into its own column.
+
+**Valid entities the failed event also carried are preserved.** The failed-events table materialises a
+valid attached entity in its own column (e.g. a passing `contexts_*`), so the recovery's pass-through
+carries it into the good row untouched. Recover only what failed; do **not** null the sibling entity
+columns. (Confirmed live 2026-08-23: `source=unstruct` rows kept a valid `contexts_*` entity, which
+landed intact alongside the reconstructed event.)
 
 ## Navigation rules (and why)
 

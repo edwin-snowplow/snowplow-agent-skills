@@ -23,9 +23,14 @@ Usage:
 config.json keys (all three-part Unity Catalog names):
     GOOD_CATALOG, GOOD_SCHEMA, GOOD_TABLE,
     FAILED_CATALOG, FAILED_SCHEMA, FAILED_TABLE,
-    RECOVERY_COLUMN            — the contexts_<vendor>_<name>_<major> column name
+    RECOVERY_COLUMN            — the contexts_<vendor>_<name>_<major> (or
+                                 unstruct_event_<vendor>_<name>_<major>) column name
     FAILING_SCHEMA_URI         — the iglu: URI being recovered
     APP_ID
+    FAILURE_SOURCE  (optional) — 'contexts' or 'unstruct'. When set, scopes prep to
+                                 rows whose failure source matches, so a schema that
+                                 failed both ways recovers one source per run into its
+                                 own column. Omit only when the schema fails one way.
     DAYS_LOOKBACK              — integer lookback, OR set a bounded range with
     LOAD_TSTAMP_START [, LOAD_TSTAMP_END]   — 'YYYY-MM-DD' (or full timestamp)
     TARGET_CATALOG, TARGET_SCHEMA, TARGET_TABLE  (optional) — where the INSERT
@@ -52,6 +57,7 @@ Prints a sanity summary (column counts, pass-through, nulled) to stderr.
 """
 
 import argparse
+import csv
 import json
 import sys
 
@@ -61,36 +67,46 @@ FAILURE_COL = "contexts_com_snowplowanalytics_snowplow_failure_1"
 def parse_columns(output):
     """Parse a two-column (column_name, full_data_type) paste, preserving order.
 
-    full_data_type may contain spaces (e.g. `ARRAY<STRUCT<a: STRING, b: BIGINT>>`),
-    so only the FIRST separator splits name from type. Handles tab-, pipe-, and
-    whitespace-separated output and skips a header row.
+    full_data_type routinely contains commas and spaces (`decimal(18,2)`,
+    `array<struct<a:string, b:bigint>>`). Databricks copy/download gives CSV with
+    such types quoted, so comma output is parsed with the csv module (quoted fields
+    stay intact). Tab-, pipe-, and whitespace-separated output also parse. A
+    `column_name / full_data_type` header row and markdown separator lines are
+    skipped.
     """
-    columns = []
-    for line in output.splitlines():
-        s = line.strip()
-        if not s or s.startswith("#"):
-            continue
-        if "|" in s and s.count("|") >= 2:
-            cells = [c.strip() for c in s.strip("|").split("|")]
-            cells = [c for c in cells if c]
-            if len(cells) < 2:
-                continue
-            name, dtype = cells[0], cells[1]
-        elif "\t" in s:
-            parts = s.split("\t")
-            parts = [p.strip() for p in parts if p.strip()]
-            if len(parts) < 2:
-                continue
-            name, dtype = parts[0], parts[1]
-        else:
-            parts = s.split(None, 1)
-            if len(parts) < 2:
-                continue
-            name, dtype = parts[0].strip(), parts[1].strip()
-        # Skip a header row / markdown separator line.
+    raw = [l for l in output.splitlines() if l.strip() and not l.strip().startswith("#")]
+    if not raw:
+        return []
+
+    # Detect the delimiter from the first non-empty line: prefer tab, then comma,
+    # then pipe; fall back to whitespace.
+    head = raw[0]
+    if "\t" in head:
+        delim = "\t"
+    elif "," in head:
+        delim = ","
+    elif "|" in head:
+        delim = "|"
+    else:
+        delim = None
+
+    def keep(name, dtype):
         if name.lower() == "column_name" or set(name) <= set("-:| "):
-            continue
+            return  # header row or markdown separator
         columns.append((name, dtype))
+
+    columns = []
+    if delim in ("\t", ",", "|"):
+        # csv.reader handles quoted types that themselves contain the delimiter.
+        for row in csv.reader(raw, delimiter=delim):
+            cells = [c.strip() for c in row if c.strip() != ""]
+            if len(cells) >= 2:
+                keep(cells[0], cells[1])
+    else:
+        for line in raw:
+            parts = line.strip().split(None, 1)  # split name from type on first ws
+            if len(parts) >= 2:
+                keep(parts[0].strip(), parts[1].strip())
     return columns
 
 
@@ -143,13 +159,24 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
     target_sch = cfg.get("TARGET_SCHEMA") or cfg["GOOD_SCHEMA"]
     target_tbl = cfg.get("TARGET_TABLE") or cfg["GOOD_TABLE"]
 
+    # Optional source scoping: a schema can fail as both a context entity and the
+    # self-describing event; each is a separate run into its own column.
+    source_predicate = ""
+    if cfg.get("FAILURE_SOURCE"):
+        source_predicate = (
+            "      AND GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source') = '%s'\n"
+            % cfg["FAILURE_SOURCE"].replace("'", "''")
+        )
+
     sql = (
         "INSERT INTO %s.%s.%s\n" % (target_cat, target_sch, target_tbl)
         + "WITH prep AS (\n    SELECT *\n    FROM %s.%s.%s\n"
         % (cfg["FAILED_CATALOG"], cfg["FAILED_SCHEMA"], cfg["FAILED_TABLE"])
         + "    WHERE %s\n" % time_filter(cfg)
         + "      AND app_id = '%s'\n" % app_id_safe
-        + "      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '%s'\n)\n" % schema_safe
+        + "      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '%s'\n" % schema_safe
+        + source_predicate
+        + ")\n"
         + "SELECT\n    " + ",\n    ".join(select_exprs) + "\nFROM prep;"
     )
     return sql, select_exprs, passthrough, nulled, recovery_seen

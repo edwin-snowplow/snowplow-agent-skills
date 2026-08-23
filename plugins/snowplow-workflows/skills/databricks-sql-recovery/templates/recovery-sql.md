@@ -123,12 +123,26 @@ The repaired entity's shape and field types are defined by the Iglu schema and m
 recovery column's type — not chosen. Cross-check by pulling a recent **validated** event of the same
 entity from the **good** table. `<recovery_column>` is the entity column found above.
 
+**contexts source** — the column is an `ARRAY<STRUCT<...>>`, so index element 0 and filter on `size`:
+
 ```sql
 SELECT
     event_id,
     <recovery_column>[0] AS validated_entity
 FROM <good_catalog>.<good_schema>.<good_table>
 WHERE size(<recovery_column>) > 0
+LIMIT 10;
+```
+
+**unstruct source** — the `unstruct_event_*` column is a **single `STRUCT<...>`, not an array**. Do
+**not** use `[0]` or `size()` (both error on a struct). Read it directly and filter on `IS NOT NULL`:
+
+```sql
+SELECT
+    event_id,
+    <recovery_column> AS validated_entity
+FROM <good_catalog>.<good_schema>.<good_table>
+WHERE <recovery_column> IS NOT NULL
 LIMIT 10;
 ```
 
@@ -170,10 +184,12 @@ profiling confirmed coercibility. (Full decision table: `reference/strict-typing
 
 ## Recovery expression pattern (Phase 4) — build & confirm with the user
 
-Reconstruct the repaired entity as an array of one struct. `_schema_version` is **mandatory** (first
-field) for the Databricks Loader. Field names, types, and order must match the recovery column's
-`full_data_type` exactly. Extract each field from the JSON `data` string with `GET_JSON_OBJECT`, then
-`CAST` to the target type.
+The shape depends on the failure **source** (from the drill-in). Field names, types, and order must
+match the recovery column's `full_data_type` exactly — read that type, don't assume. Extract each field
+from the JSON `data` string with `GET_JSON_OBJECT`, then `CAST` to the target type.
+
+**contexts source** — reconstruct as an **array of one struct**. Here `_schema_version` is the first
+field (the `contexts_*` `full_data_type` lists it):
 
 ```sql
 ARRAY(NAMED_STRUCT(
@@ -183,10 +199,27 @@ ARRAY(NAMED_STRUCT(
 ))
 ```
 
-`ARRAY(STRUCT(CAST(...) AS user_id, ...))` is an equivalent form (positional struct fields with
-`AS name`), but `NAMED_STRUCT` makes the field names explicit and is preferred. Do **not** append
-`AS <column_name>` here — the generator adds it. When embedding this into the generator query
-(Phase 7), it is placed inside a **single-quoted** string literal, so **double every single quote**
+**unstruct source** — reconstruct as a **single `NAMED_STRUCT`, no outer `ARRAY(...)`** (the
+`unstruct_event_*` column is a bare `STRUCT`). Critically, the `unstruct_event_*` `full_data_type`
+typically has **no `_schema_version` field** — so **omit it** unless the type actually lists it. Match
+the type as-is:
+
+```sql
+NAMED_STRUCT(
+    'nubmers',       CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.nubmers')       AS BIGINT),
+    'true_or_false', CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.true_or_false') AS BOOLEAN),
+    'words',         CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.words')         AS STRING)
+)
+```
+
+(Whichever source: the failed row's `data` still lives in the failure context, so extraction is the
+same `GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, ...)` — only the
+target column and the wrapper differ.)
+
+`STRUCT(CAST(...) AS user_id, ...)` (positional fields with `AS name`) is an equivalent form, but
+`NAMED_STRUCT` makes the field names explicit and is preferred. Do **not** append `AS <column_name>`
+here — the generator adds it. When embedding this into the in-warehouse generator query (Phase 7
+fallback), it is placed inside a **single-quoted** string literal, so **double every single quote**
 inside the expression (`'1-0-0'` → `''1-0-0''`, `'$.user_id'` → `''$.user_id''`).
 
 ## Test SELECT (Phase 4 — run and validate before the INSERT)
@@ -247,7 +280,10 @@ stripped in transit (see the fallback caveat below for why that matters).
 ### Step 1 — column-metadata queries (the user runs both, pastes each result)
 
 These return plain `column_name, full_data_type` in ordinal order — no quotes to strip, so the copy is
-lossless. Run **once against the good table, once against the failed table**.
+lossless. Run **once against the good table, once against the failed table**. Any of Databricks' copy
+formats works — **plain text, CSV, or markdown**: the script auto-detects the delimiter (tab, comma
+with quoted types, or `|` table) and skips the header/separator row, so you don't have to pick one. If
+a paste can't be parsed it errors with `no columns parsed` rather than dropping rows silently.
 
 ```sql
 -- GOOD table columns
@@ -279,13 +315,18 @@ string literal here, so do **not** double them), and a `config.json`:
   "FAILING_SCHEMA_URI": "<failing_schema_uri>",
   "APP_ID": "<app_id>",
   "DAYS_LOOKBACK": <days>,
+  "FAILURE_SOURCE": "<contexts|unstruct>",
   "TARGET_CATALOG": "<target_catalog>", "TARGET_SCHEMA": "<target_schema>", "TARGET_TABLE": "<target_table>"
 }
 ```
 
-`TARGET_*` is optional (defaults to `GOOD_*`); set it to the **staging** table for the staging path.
-For a bounded window instead of a lookback, drop `DAYS_LOOKBACK` and set `"LOAD_TSTAMP_START": "<start>"`
-(and optionally `"LOAD_TSTAMP_END": "<end>"`). Then:
+`RECOVERY_COLUMN` is the `contexts_*` column for a **contexts** run or the `unstruct_event_*` column for
+an **unstruct** run — the same column whose `full_data_type` you matched in Phase 4. `FAILURE_SOURCE`
+(`contexts` or `unstruct`) scopes `prep` to that source, so a schema that failed both ways recovers one
+source per run into its own column; omit it only when the drill-in showed a single source. `TARGET_*` is
+optional (defaults to `GOOD_*`); set it to the **staging** table for the staging path. For a bounded
+window instead of a lookback, drop `DAYS_LOOKBACK` and set `"LOAD_TSTAMP_START": "<start>"` (and
+optionally `"LOAD_TSTAMP_END": "<end>"`). Then:
 
 ```bash
 python3 scripts/generate_insert.py \
@@ -423,7 +464,9 @@ comes from the good table).
 ```sql
 SELECT COUNT(*) AS rows_in_staging FROM <staging_catalog>.<staging_schema>.<staging_table>;
 
-SELECT event_id, <recovery_column>[0]
+-- contexts source (ARRAY column):  SELECT event_id, <recovery_column>[0] ...
+-- unstruct source (STRUCT column): SELECT event_id, <recovery_column>    ...  (no [0])
+SELECT event_id, <recovery_column>
 FROM <staging_catalog>.<staging_schema>.<staging_table>
 LIMIT 10;
 ```

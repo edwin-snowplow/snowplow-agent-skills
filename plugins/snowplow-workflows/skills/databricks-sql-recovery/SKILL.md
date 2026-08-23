@@ -153,18 +153,26 @@ value:
    "Inspect a validated event" query (written with that **real** column name) or ask for the Iglu
    schema JSON.
 
-Only now build the recovery expression to match `full_data_type` field-for-field (`_schema_version`
-first, mandatory), reconstructing as `ARRAY(NAMED_STRUCT(...))` with each field
-`CAST(GET_JSON_OBJECT(...) AS <type>)` (`reference/failure-context.md`). Emit the **test SELECT**
-(event_id + reconstructed column). **Do not generate the INSERT yet** — have the user run it and paste
-output back. Because a clean run doesn't prove correctness here, also offer the **optional per-field
-null-count check**.
+Only now build the recovery expression to match `full_data_type` field-for-field, with each field
+`CAST(GET_JSON_OBJECT(...) AS <type>)` (`reference/failure-context.md`). The shape depends on the
+Phase-2 **source**:
+- **contexts** → `ARRAY(NAMED_STRUCT(...))`, and `_schema_version` is the first field (the `contexts_*`
+  `full_data_type` lists it).
+- **unstruct** → a single `NAMED_STRUCT(...)` with **no outer `ARRAY()`**, into the `unstruct_event_*`
+  column. Its `full_data_type` usually has **no `_schema_version`** field — omit it unless the type
+  lists it. Do not carry over the contexts "`_schema_version` first, mandatory" rule; match the actual
+  type. (See the two forms in `templates/recovery-sql.md`.)
+
+Emit the **test SELECT** (event_id + reconstructed column). **Do not generate the INSERT yet** — have
+the user run it and paste output back. Because a clean run doesn't prove correctness here, also offer
+the **optional per-field null-count check**.
 
 ### Phase 5 — Validate (gate — do not skip)
 Check the pasted output against the validation gate in `reference/strict-typing-and-classification.md`:
 **no unexpected NULLs** (decisive — Databricks NULLs silently, so this, not "the query ran", is the
-primary signal), values corrected, struct shape matches `full_data_type` (`_schema_version` first),
-row count matches. If anything fails, fix the expression and re-emit the test SELECT (back to Phase 4).
+primary signal), values corrected, struct shape matches `full_data_type` exactly (field names, types,
+order — including whether `_schema_version` is present: yes for `contexts_*`, usually no for
+`unstruct_event_*`), row count matches. If anything fails, fix the expression and re-emit the test SELECT.
 Diagnostics: `troubleshooting/recovery-issues.md`.
 
 ### Phase 6 — Choose the write path
@@ -190,15 +198,19 @@ full script invocation):
    `information_schema.columns`, `ORDER BY ordinal_position`) and paste each result — plain
    `column_name, full_data_type`, nothing quote-sensitive, so the copy is lossless.
 2. Write those pastes, a `config.json` (table identifiers, INSERT target, recovery column, failing
-   schema URI, app_id, window), and the **validated Phase-4 recovery expression** (single quotes stay
-   **single** — no doubling; it isn't embedded in a string literal) to files, and run the script. It
+   schema URI, app_id, window, and **`FAILURE_SOURCE`** = `contexts` or `unstruct` when the schema
+   failed both ways — it scopes `prep` to the source you're recovering; omit for a single-source
+   schema), and the **validated Phase-4 recovery expression** (single quotes stay **single** — no
+   doubling; it isn't embedded in a string literal) to files, and run the script. `RECOVERY_COLUMN` is
+   the `contexts_*` column for a contexts run or the `unstruct_event_*` column for an unstruct run. It
    prints a sanity summary (column counts, pass-through, nulled) and writes the full INSERT to a
    `.sql` file.
 
-Review the generated INSERT with the user (recovery column carries the expression, failure column
-nulled, `load_tstamp` refreshed, positional column order matches the good table). If the script warns
-the recovery column wasn't matched, or the null-cast on the failure column is rejected, see
-`troubleshooting/recovery-issues.md`.
+Review the generated INSERT with the user (recovery column carries the expression, `load_tstamp`
+refreshed, positional column order matches the good table; sibling entity columns — including other
+`contexts_*` — **pass through**, so a valid entity the event also carried is preserved, not nulled). If
+the script warns the recovery column wasn't matched, or the null-cast on the failure column is rejected,
+see `troubleshooting/recovery-issues.md`.
 
 **Fallback (no local Python):** the **in-warehouse INSERT-generator query** (`templates/recovery-sql.md`)
 builds the same INSERT as a single result cell — but warn the user that Databricks' plain-text copy can
@@ -253,6 +265,33 @@ Two things must be true before the INSERT can land — confirm both:
 
 **Only bail out** when the schema genuinely can't be made to resolve or no target column can exist.
 Diagnostics: `troubleshooting/recovery-issues.md`.
+
+---
+
+## Recovering an unstruct (self-describing event) failure
+
+Same 8-phase flow, but the target is the **self-describing event**, not a context entity. The drill-in
+`source` tells you: `unstruct` means the schema failed as the event body, recovering into the
+`unstruct_event_<vendor>_<name>_<major>` column. Four things differ from the contexts path — everything
+else (identification, profiling gate, the script, pass-through, validation) is identical:
+
+1. **Target column is a single `STRUCT`, not `ARRAY<STRUCT>`.** Read the shape from the
+   `unstruct_event_*` column's `full_data_type`, same as always.
+2. **Reconstruct with a bare `NAMED_STRUCT(...)`** — no outer `ARRAY(...)`.
+3. **No `_schema_version`.** The `unstruct_event_*` `full_data_type` typically omits it, so the struct
+   does too. Match the type; don't apply the contexts "`_schema_version` first" rule.
+4. **Inspection/validation queries drop `[0]` and `size()`** — those error on a struct. Read the column
+   directly and filter with `IS NOT NULL`.
+
+For Phase 7, set `FAILURE_SOURCE = unstruct` and `RECOVERY_COLUMN` to the `unstruct_event_*` column. A
+schema that failed **both** as a context and as the event is two separate runs, one per source, each
+into its own column — `FAILURE_SOURCE` keeps them from bleeding together. And a valid entity the event
+*also* carried (e.g. a passing `contexts_*`) is preserved automatically: the failed-events table keeps
+it in its own column, and the recovery passes that column through untouched.
+
+Confirmed live against `iglu:gcp.sandbox/Alana-Test/jsonschema/1-0-0`: `unstruct_event_*` was
+`struct<nubmers:bigint,true_or_false:boolean,words:string>` (no `_schema_version`), and the recovered
+rows kept the valid `contexts_*` entity alongside the reconstructed event.
 
 ---
 

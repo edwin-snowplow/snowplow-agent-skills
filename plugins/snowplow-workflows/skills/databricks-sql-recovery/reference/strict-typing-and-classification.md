@@ -15,10 +15,16 @@ types, and order must match the target column's type.
 
 ## Strict struct typing (the key Databricks constraint)
 
-Entity columns are native `ARRAY<STRUCT<...>>`. When you `INSERT ... SELECT` into a Delta table, the
-reconstructed struct must be **type-compatible** with the target column. Delta resolves struct fields
+Context entity columns are native `ARRAY<STRUCT<...>>`; the **self-describing (unstruct) event column
+is a single `STRUCT<...>`, not an array**. When you `INSERT ... SELECT` into a Delta table, the
+reconstructed value must be **type-compatible** with the target column. Delta resolves struct fields
 **by name**, so the field **names must match exactly**; keep the field **types** matching too, and
 keep the **order** matching so the generated positional INSERT reads cleanly and reviews easily.
+
+Read the shape from the recovery column's `full_data_type` and build to match it: `ARRAY(NAMED_STRUCT(...))`
+for a `contexts_*` column, a bare `NAMED_STRUCT(...)` for an `unstruct_event_*` column. Note the field
+set can differ too — the `contexts_*` struct carries `_schema_version`, the `unstruct_event_*` struct
+usually does not. Match whatever the type lists; don't assume.
 
 Get that contract from the recovery column's `full_data_type` in `INFORMATION_SCHEMA` (see "Finding
 the recovery column name" in `templates/recovery-sql.md`), e.g.:
