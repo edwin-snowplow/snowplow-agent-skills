@@ -7,10 +7,14 @@ in `templates/recovery-sql.md`.
 
 ## Strict struct typing (the key BigQuery constraint)
 
-Entity columns are native `ARRAY<STRUCT<...>>`. A positional `INSERT ... SELECT` requires the
-SELECT's output type for each column to **match the target column's type exactly**. For the
-reconstructed entity this means the `STRUCT` you build must have the **same field names, the same
-field types, and the same field order** as the target column's declared type.
+Context entity columns are native `ARRAY<STRUCT<...>>`; the **self-describing (unstruct) event column
+is a single `STRUCT<...>`, not an array**. A positional `INSERT ... SELECT` requires the SELECT's
+output type for each column to **match the target column's type exactly**. For the reconstructed entity
+this means the value you build must have the **same field names, the same field types, and the same
+field order** as the target column's declared type — wrapped as `[STRUCT(...)]` for a `contexts_*`
+column, or a bare `STRUCT(...)` for an `unstruct_event_*` column. The field set can differ too: the
+`contexts_*` struct carries `_schema_version`, the `unstruct_event_*` struct usually does not. Match
+whatever the type lists.
 
 Get that contract from the recovery column's `data_type` in `INFORMATION_SCHEMA`, e.g.:
 

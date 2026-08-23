@@ -27,28 +27,41 @@ Fields of each failure struct:
 ## The `source` field — contexts vs unstruct (nested under `errors`, not top-level)
 
 Whether the event failed as a **context entity** or the **self-describing (unstructured) event** is
-recorded on each error, at **`errors[0].source`** — *not* a top-level failure field (reading
-`...failure_1[0].source` returns NULL). Read it with
-`JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0].source)`. *(The nested path
-is confirmed on Snowflake; on BigQuery it's inferred — if `errors` is a native `REPEATED` field rather
-than `JSON`, use `...errors[SAFE_OFFSET(0)].source` instead. Confirm on the first real run.)* Values:
+recorded on each error, at **`errors[SAFE_OFFSET(0)].source`** — *not* a top-level failure field
+(reading `...failure_1[SAFE_OFFSET(0)].source` returns NULL). Read it with
+`JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors[SAFE_OFFSET(0)].source)`.
+*(Confirmed live on BigQuery 2026-08-23: `errors` is `ARRAY<JSON>`, so index the array with
+`SAFE_OFFSET(0)` and then JSON-navigate `.source`.)* Values:
 
 - **`contexts`** — failed as a context entity → recovers into the `contexts_<vendor>_<name>_<major>`
   **ARRAY** column (this skill's main path).
 - **`unstruct`** — the *same* schema failed as the self-describing event → recovers into the
   `unstruct_event_<vendor>_<name>_<major>` column, a **single STRUCT** (not an array) — a different
-  target column **and** a different reconstruction (no outer array).
+  target column **and** a different reconstruction: a bare `STRUCT(...)`, no array brackets. The
+  `unstruct_event_*` `data_type` usually has **no `_schema_version`** field (the `contexts_*` struct
+  does) — match it, don't add one. Inspection/validation read the column directly — no `[0]`,
+  `[OFFSET(0)]`, or `ARRAY_LENGTH` (all error on a struct); filter `IS NOT NULL`. *(Shape confirmed
+  live on Databricks; confirm BigQuery's own materialisation on the first real run.)*
 
 **One schema can fail both ways in the same window.** A mix of `contexts` and `unstruct` can't go
-through one recovery expression: scope the run to one `source`, recover it, then handle the other as a
-separate run into its own column.
+through one recovery expression: scope the run to one `source` (the generator's `<source>` predicate),
+recover it, then handle the other as a separate run into its own column.
+
+**Valid entities the failed event also carried are preserved.** The failed-events table materialises a
+passing attached entity in its own column, so the recovery's pass-through carries it into the good row
+untouched. Recover only what failed; do **not** null the sibling entity columns. (Confirmed live on
+Databricks 2026-08-23; the same pass-through applies here.)
 
 ## Navigation rules (and why)
 
-- **`[0]` — arrays are zero-based** (direct index; errors if out of range). The failure context is
-  normally a single-element array, so `contexts_..._failure_1[0]` is the failure struct. Use
-  `[SAFE_OFFSET(0)]` to get NULL instead of an error on an empty array.
-- **`.field`** — navigate into a struct field, e.g. `...failure_1[0].data`, `...failure_1[0].schema`.
+- **`[SAFE_OFFSET(0)]` — 0-based array access, NULL-safe (the recommended accessor here).** BigQuery
+  arrays need a position accessor — `OFFSET`/`ORDINAL` (error out of range), `SAFE_OFFSET`/`SAFE_ORDINAL`
+  (NULL out of range), or a bare `[0]` (behaves like `OFFSET`). Prefer `[SAFE_OFFSET(0)]`: 0-based (same
+  as the other warehouses), and NULL rather than an error on an unexpectedly empty array — the Phase-3.5
+  profiling gate then surfaces that as an absent count instead of a mid-run failure. The failure context
+  is normally a single-element array, so `contexts_..._failure_1[SAFE_OFFSET(0)]` is the failure struct.
+- **`.field`** — navigate into a struct field, e.g. `...failure_1[SAFE_OFFSET(0)].data`,
+  `...failure_1[SAFE_OFFSET(0)].schema`.
 - **JSON extraction — the extractor is chosen *per field from profiling*, not fixed.** `data` is
   `JSON`. Two ways to read a scalar:
   - **strict accessor** — `INT64(...)`, `STRING(...)`, `FLOAT64(...)`, `BOOL(...)` — reads the native
@@ -74,8 +87,8 @@ incomplete recovery.
 To expand a multi-element failure array (or to read `errors` row-by-row), use `UNNEST`:
 `FROM <table>, UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f`, then read `f.data`,
 `f.errors`, `f.schema`, etc. This is what the payload-inspection query does so each field renders on
-its own. For **reconstructing** the entity, direct `[0]` indexing is simpler and is what the recovery
-expression uses.
+its own. For **reconstructing** the entity, direct `[SAFE_OFFSET(0)]` indexing is simpler and is what
+the recovery expression uses.
 
 ## Grounding the target shape (never guess it)
 

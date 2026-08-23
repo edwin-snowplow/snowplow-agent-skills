@@ -72,9 +72,9 @@ Built to match `data_type` exactly (order: `_schema_version`, `user_id`, `user_n
 ```sql
 [STRUCT(
     '1-0-0'                                                                                            AS _schema_version,
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_id) AS INT64)       AS user_id,          -- string-encoded → coerce
-    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_name)                        AS user_name,        -- native string → strict
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.account_age_days) AS INT64) AS account_age_days -- mixed number,string → coerce
+    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_id) AS INT64)       AS user_id,          -- string-encoded → coerce
+    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_name)                        AS user_name,        -- native string → strict
+    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.account_age_days) AS INT64) AS account_age_days -- mixed number,string → coerce
 )]
 ```
 
@@ -117,7 +117,7 @@ good-only columns are `CAST(NULL AS ...)`. Reviewed it, column count matched the
 
 ## Phase 8 — run, validate, promote
 
-Ran the INSERT into staging → 3,418 rows. Spot-checked `contexts_com_acme_user_entity_1[0]` in
+Ran the INSERT into staging → 3,418 rows. Spot-checked `contexts_com_acme_user_entity_1[SAFE_OFFSET(0)]` in
 staging: correct. Promoted:
 
 ```sql

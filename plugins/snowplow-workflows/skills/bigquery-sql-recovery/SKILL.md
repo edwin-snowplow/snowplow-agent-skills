@@ -33,6 +33,9 @@ time.
 
 ## Where the knowledge lives (read the form you need, when you need it)
 
+- **`OVERVIEW.md`** — a plain-language summary of what this skill does, for the **user** (not recovery
+  instructions). If they want to understand the process, or ask "what does this do?", share or read from it.
+
 - **`templates/recovery-sql.md`** — every SQL statement, with placeholders. The thing you actually
   hand the user at each phase.
 - **`reference/failure-context.md`** — the failure column's structure and how to navigate/extract it
@@ -56,7 +59,8 @@ confirmed against real Snowplow tables.
   field: **strict** `INT64()/STRING()/...` where the value is already native, `CAST(JSON_VALUE(...) AS
   <TYPE>)` where it's string-encoded or mixed, and *stop & partition* where it won't coerce. Both error
   on a bad value (never silent-NULL), and profiling guarantees they won't (`reference/failure-context.md`).
-- **Zero-based array access.** `contexts_..._failure_1[0].data` (use `[SAFE_OFFSET(0)]` for NULL-safe).
+- **Array access via `[SAFE_OFFSET(0)]`.** BigQuery arrays need a position accessor; use `SAFE_OFFSET(0)`
+  (0-based, NULL — not error — on an empty array; the profiling gate then surfaces it as an absent count).
 
 ---
 
@@ -130,16 +134,25 @@ value:
    validated event" query (written with that **real** column name) or ask for the Iglu schema JSON —
    grounding the target field names/types, never the failed payload.
 
-Only now build the recovery expression to match `data_type` field-for-field (`_schema_version` first,
-mandatory), using the **per-field extractor chosen in Phase 3.5** (`reference/failure-context.md`).
+Only now build the recovery expression to match `data_type` field-for-field, using the **per-field
+extractor chosen in Phase 3.5** (`reference/failure-context.md`). The shape depends on the Phase-2
+**source**:
+- **contexts** → `[STRUCT(...)]` (array of one struct), `_schema_version` first (the `contexts_*`
+  `data_type` lists it).
+- **unstruct** → a single `STRUCT(...)` with **no array brackets**, into the `unstruct_event_*` column.
+  Its `data_type` usually has **no `_schema_version`** field — omit it unless the type lists it. Don't
+  apply the contexts "`_schema_version` first" rule; match the actual type. (Both forms in
+  `templates/recovery-sql.md`.)
+
 Emit the **test SELECT** (event_id + reconstructed column). **Do not generate the INSERT yet** — have
 the user run it and paste output back.
 
 ### Phase 5 — Validate (gate — do not skip)
 Check the pasted output against the validation gate in `reference/strict-struct-typing.md`: the query
 **ran clean** (decisive — Phase 3.5 already proved coercibility and the strict/`CAST` extractors error
-rather than silent-NULL), struct shape matches `data_type`, row count matches, no unexpected nulls,
-values corrected. If anything fails, fix the expression and re-emit the test SELECT (back to Phase 4).
+rather than silent-NULL), struct shape matches `data_type` exactly (including whether `_schema_version`
+is present — yes for `contexts_*`, usually no for `unstruct_event_*`), row count matches, no unexpected
+nulls, values corrected. If anything fails, fix the expression and re-emit the test SELECT (back to Phase 4).
 Diagnostics:
 `troubleshooting/recovery-issues.md`.
 
@@ -160,11 +173,13 @@ exactly). The chosen target becomes the INSERT target; column classification alw
 
 ### Phase 7 — Generate the INSERT (BigQuery builds it)
 Give the user the **INSERT-generator query** with placeholders filled: table identifiers, INSERT
-target, recovery column, the validated recovery expression (single quotes handled per the template),
-failing schema URI, app_id, window. It returns one cell — the full INSERT. Review it with them
-(recovery column carries the expression, failure column nulled, `load_tstamp` refreshed, column count
-matches). If the recovery column wasn't matched or the null-cast is rejected, see
-`troubleshooting/recovery-issues.md`.
+target, recovery column (`contexts_*` or `unstruct_event_*`), the validated recovery expression (single
+quotes handled per the template), failing schema URI, app_id, window, and the **`<source>` predicate**
+(`contexts` or `unstruct`) scoping `prep` to the source you're recovering — so a schema that failed both
+ways is two runs into two columns. It returns one cell — the full INSERT. Review it with them (recovery
+column carries the expression, `load_tstamp` refreshed, column count matches; sibling entity columns
+pass through, so a valid entity the event also carried is preserved, not nulled). If the recovery column
+wasn't matched or the null-cast is rejected, see `troubleshooting/recovery-issues.md`.
 
 ### Phase 8 — Run, validate, promote
 If the duplicate pre-check was skipped in Phase 2 and there's any doubt, offer it once more. Run the
@@ -204,7 +219,7 @@ Two things must be true before the INSERT can land — confirm both:
 **Key subtlety — filter on the recorded URI, build into the corrected one:**
 
 - **Filter** the failed rows by the schema URI **as stored in the failure context**
-  (`contexts_com_snowplowanalytics_snowplow_failure_1[0].schema`) — the original, possibly-wrong URI
+  (`contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema`) — the original, possibly-wrong URI
   the event carried. Every WHERE predicate (drill-in, payload, test `prep`, INSERT `prep`, duplicate
   pre-check) must match on that recorded value.
 - **Derive** the target column and `_schema_version` from the **corrected** URI.
@@ -213,6 +228,32 @@ Two things must be true before the INSERT can land — confirm both:
 
 **Only bail out** when the schema genuinely can't be made to resolve or no target column can exist.
 Diagnostics: `troubleshooting/recovery-issues.md`.
+
+---
+
+## Recovering an unstruct (self-describing event) failure
+
+Same 8-phase flow, targeting the **self-describing event** instead of a context entity. The drill-in
+`source = unstruct` means the schema failed as the event body, recovering into the
+`unstruct_event_<vendor>_<name>_<major>` column. Four things differ from the contexts path — everything
+else (identification, profiling gate + per-field extractor choice, the generator, pass-through,
+validation) is identical:
+
+1. **Target column is a single `STRUCT`, not `ARRAY<STRUCT>`.** Read the shape from the
+   `unstruct_event_*` column's `data_type`.
+2. **Reconstruct with a bare `STRUCT(...)`** — no array brackets `[...]`.
+3. **No `_schema_version`.** The `unstruct_event_*` `data_type` typically omits it; match the type.
+4. **Inspection/validation queries drop `[0]`/`[OFFSET(0)]` and `ARRAY_LENGTH`** (they error on a
+   struct) — read the column directly, filter `IS NOT NULL`.
+
+For Phase 7, set the generator's `<source>` predicate to `unstruct` and `<recovery_column>` to the
+`unstruct_event_*` column. A schema that failed **both** ways is two separate runs, one per source. A
+valid entity the event also carried (a passing `contexts_*`) is preserved automatically via pass-through.
+
+*Confirmed live on BigQuery 2026-08-23: `unstruct_event_gcp_sandbox_alana_test_1` was
+`STRUCT<nubmers INT64, true_or_false BOOL, words STRING>` (single struct, no `_schema_version`); the
+`SAFE_OFFSET(0)` source path returned `unstruct`; and a full recovery landed 10 rows with the
+reconstructed event plus the preserved valid `contexts_*` entity.*
 
 ---
 

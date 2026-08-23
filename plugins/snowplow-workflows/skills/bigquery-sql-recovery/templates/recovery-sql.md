@@ -34,12 +34,12 @@ surveying what's failing without dumping every row, especially over a wide windo
 
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].schema       AS failing_schema,
+    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema       AS failing_schema,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type AS failure_type,
+    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].failure_type AS failure_type,
     COUNT(*)                                                          AS failed_events,
-    MIN(contexts_com_snowplowanalytics_snowplow_failure_1[0].timestamp) AS first_seen,
-    MAX(contexts_com_snowplowanalytics_snowplow_failure_1[0].timestamp) AS last_seen
+    MIN(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].timestamp) AS first_seen,
+    MAX(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].timestamp) AS last_seen
 FROM `<failed_project>.<failed_dataset>.<failed_table>`
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)  -- or a bounded range (see Time window)
   AND contexts_com_snowplowanalytics_snowplow_failure_1 IS NOT NULL
@@ -54,13 +54,13 @@ so it returns a handful of rows, not a flood.
 
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type              AS failure_type,
-    JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0].source) AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].errors                    AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].data                      AS data
+    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].failure_type              AS failure_type,
+    JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors[SAFE_OFFSET(0)].source) AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
+    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors                    AS errors,
+    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data                      AS data
 FROM `<failed_project>.<failed_dataset>.<failed_table>`
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)  -- or a bounded range
-  AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+  AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
   AND app_id = '<app_id>'
 LIMIT 10;
 ```
@@ -123,12 +123,27 @@ The repaired entity's shape and field types are defined by the Iglu schema and m
 recovery column's type — not chosen. Cross-check by pulling a recent **validated** event of the same
 entity from the **good** table. `<recovery_column>` is the entity column found above.
 
+**contexts source** — the column is `ARRAY<STRUCT<...>>`, so index element 0 and filter on `ARRAY_LENGTH`:
+
 ```sql
 SELECT
     event_id,
-    <recovery_column>[0] AS validated_entity
+    <recovery_column>[SAFE_OFFSET(0)] AS validated_entity
 FROM `<good_project>.<good_dataset>.<good_table>`
 WHERE ARRAY_LENGTH(<recovery_column>) > 0
+LIMIT 10;
+```
+
+**unstruct source** — the `unstruct_event_*` column is a **single `STRUCT`, not an array**. Do **not**
+use `[0]` / `[OFFSET(0)]` or `ARRAY_LENGTH` (they error on a non-array). Read it directly and filter on
+`IS NOT NULL`:
+
+```sql
+SELECT
+    event_id,
+    <recovery_column> AS validated_entity
+FROM `<good_project>.<good_dataset>.<good_table>`
+WHERE <recovery_column> IS NOT NULL
 LIMIT 10;
 ```
 
@@ -148,11 +163,11 @@ tolerate any input), so it's always safe to suggest. Add one block per field, us
 
 ```sql
 WITH prep AS (
-    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[0].data AS d
+    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data AS d
     FROM `<failed_project>.<failed_dataset>.<failed_table>`
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
 )
 SELECT
     COUNT(*)                                                                            AS total_rows,
@@ -181,18 +196,31 @@ which guarantees the test SELECT below runs clean.
 
 ## Recovery expression pattern (Phase 4) — build & confirm with the user
 
-Reconstruct the repaired entity as an array of one struct. `_schema_version` is **mandatory** (first
-field) for the BigQuery Streaming Loader. Field names, types, and order must match the recovery
-column's `data_type` exactly. Extract **each field with the extractor the profiling step selected for
-it** — strict where the value is already the native JSON type, `CAST(JSON_VALUE(...) AS <TYPE>)` where
-it's string-encoded or mixed:
+The shape depends on the failure **source** (from the drill-in). Field names, types, and order must
+match the recovery column's `data_type` exactly — read that type, don't assume. Extract **each field
+with the extractor the profiling step selected for it** — strict where the value is already the native
+JSON type, `CAST(JSON_VALUE(...) AS <TYPE>)` where it's string-encoded or mixed.
+
+**contexts source** — reconstruct as an **array of one struct**. `_schema_version` is the first field
+(the `contexts_*` `data_type` lists it):
 
 ```sql
 [STRUCT(
     '1-0-0'                                                                                       AS _schema_version,  -- corrected version
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_id) AS INT64)  AS user_id,     -- profiled as string/mixed → coerce
-    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[0].data.user_name)                   AS user_name    -- profiled as native string → strict
+    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_id) AS INT64)  AS user_id,     -- profiled as string/mixed → coerce
+    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_name)                   AS user_name    -- profiled as native string → strict
 )]
+```
+
+**unstruct source** — reconstruct as a **single `STRUCT(...)`, no array brackets** (the
+`unstruct_event_*` column is a bare `STRUCT`). Its `data_type` typically has **no `_schema_version`**
+field — omit it unless the type lists it. Same per-field extractors:
+
+```sql
+STRUCT(
+    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_id) AS INT64) AS user_id,
+    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_name)                  AS user_name
+)
 ```
 
 Both the strict accessors and `CAST(JSON_VALUE(...))` **error** on a value they can't convert — but
@@ -200,11 +228,13 @@ profiling has already confirmed every value coerces, so the expression is guaran
 **Do not use the lenient `LAX_` accessors:** they swallow an un-coercible value into NULL silently,
 which would write an incomplete recovery into the good table without erroring.
 
-`ARRAY(SELECT AS STRUCT ...)` is an equivalent form, but the array literal `[STRUCT(...)]` is
+`ARRAY(SELECT AS STRUCT ...)` is an equivalent contexts form, but the array literal `[STRUCT(...)]` is
 simplest for a single element. Do **not** append `AS <column_name>` here — the generator adds it.
-When embedding this into the generator query (Phase 7), **wrap the whole expression in double
-quotes** so its single quotes (`'1-0-0'`) need no escaping — ensure the expression itself contains no
-double-quote characters (JSON paths use dot navigation, so it won't).
+When embedding this into the generator query (Phase 7), **wrap the whole expression in a triple-quoted
+string (`'''…'''`)**, not a plain `"…"`: a long single-line `"…"` literal breaks with
+`Unclosed string literal` the moment the paste wraps it across lines, whereas a triple-quoted string
+tolerates newlines. Its single quotes (`'1-0-0'`) still need no escaping inside `'''…'''`; just keep the
+expression itself free of `'''` (it uses dot navigation and unquoted casts, so it will be).
 
 ## Test SELECT (Phase 4 — run and validate before the INSERT)
 
@@ -216,7 +246,7 @@ WITH prep AS (
     FROM `<failed_project>.<failed_dataset>.<failed_table>`
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
 )
 SELECT
     event_id,
@@ -264,7 +294,7 @@ mapping AS (
             WHEN LOWER(g.column_name) = 'load_tstamp'
                 THEN 'CURRENT_TIMESTAMP() AS load_tstamp'
             WHEN LOWER(g.column_name) = LOWER('<recovery_column>')
-                THEN "<recovery_expression> AS <recovery_column>"
+                THEN '''<recovery_expression> AS <recovery_column>'''
             WHEN f.column_name IS NOT NULL
                 THEN g.column_name
             ELSE FORMAT('CAST(NULL AS %s) AS %s', g.data_type, g.column_name)
@@ -282,7 +312,8 @@ WITH prep AS (
   FROM `<failed_project>.<failed_dataset>.<failed_table>`
   WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
     AND app_id = '<app_id>'
-    AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+    AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
+    AND JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors[SAFE_OFFSET(0)].source) = '<source>'
 )
 SELECT
     %s
@@ -298,7 +329,13 @@ Notes:
   emitted in good-table `ordinal_position` order, so they land in the right columns. This is exactly
   why the recovery struct's field order must match the target type.
 - `<recovery_expression>` is the validated Phase-4 expression, inserted verbatim inside the double
-  quotes; `<recovery_column>` is the entity column name.
+  quotes; `<recovery_column>` is the entity column — the `contexts_*` column for a contexts run or the
+  `unstruct_event_*` column for an unstruct run.
+- `<source>` scopes `prep` to one failure source — `contexts` or `unstruct`. A schema that failed both
+  ways is two separate runs, one per source, each into its own column. If the drill-in showed a single
+  source you can drop this predicate, but keeping it is harmless.
+- Sibling entity columns (other `contexts_*`) **pass through** by name, so a valid entity the event also
+  carried is preserved in the recovered row — not nulled.
 - Before the user runs the generated INSERT, review it: recovery column carries the expression,
   failure column nulled, `load_tstamp` refreshed, and the column count matches the good table.
 - If the failure-column null cast is rejected, or the recovery column wasn't matched, see
@@ -327,7 +364,9 @@ still comes from the good table).
 ```sql
 SELECT COUNT(*) AS rows_in_staging FROM `<staging_project>.<staging_dataset>.<staging_table>`;
 
-SELECT event_id, <recovery_column>[0]
+-- contexts source (ARRAY column):  SELECT event_id, <recovery_column>[SAFE_OFFSET(0)] ...
+-- unstruct source (STRUCT column): SELECT event_id, <recovery_column>    ...  (no [0])
+SELECT event_id, <recovery_column>
 FROM `<staging_project>.<staging_dataset>.<staging_table>`
 LIMIT 10;
 ```
@@ -369,7 +408,7 @@ WHERE event_id IN (
     FROM `<failed_project>.<failed_dataset>.<failed_table>`
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
 );
 ```
 
@@ -383,6 +422,6 @@ WHERE g.event_id IN (
     FROM `<failed_project>.<failed_dataset>.<failed_table>`
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
 );
 ```
