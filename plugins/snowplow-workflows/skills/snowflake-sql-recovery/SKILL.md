@@ -32,8 +32,10 @@ time.
 
 ## Where the knowledge lives (read the form you need, when you need it)
 
-- **`OVERVIEW.md`** — a plain-language summary of what this skill does, for the **user** (not recovery
-  instructions). If they want to understand the process, or ask "what does this do?", share or read from it.
+- **Plain-language overview (help centre):** a customer-facing summary of what this skill does — the
+  process, the safety gates, what it can and can't recover — is published at
+  https://support.snowplow.io/articles/5225708172-Recovering-failed-events-in-the-warehouse-with-Claude.
+  Share that link if the user asks "what does this do?".
 
 - **`templates/recovery-sql.md`** — every SQL statement, with placeholders. The thing you actually
   hand the user at each phase.
