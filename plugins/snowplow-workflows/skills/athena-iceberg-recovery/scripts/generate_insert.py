@@ -227,6 +227,10 @@ def main():
 
     if not good_columns:
         sys.exit("ERROR: no columns parsed from good-describe. Check the file.")
+    if not failed_col_names:
+        sys.exit("ERROR: no columns parsed from failed-describe. Check the file. "
+                 "(An empty failed-columns paste would null every sibling entity that "
+                 "should have passed through.)")
     if not recovery_expr:
         sys.exit("ERROR: recovery-expr is empty.")
 
