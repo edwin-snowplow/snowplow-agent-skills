@@ -276,9 +276,10 @@ This joins the good and failed tables' `INFORMATION_SCHEMA.COLUMNS`, classifies 
 column, and emits the **full INSERT statement as a single text cell**. The user runs it, copies the
 returned statement, and runs that.
 
-The recovery expression is embedded as a **double-quoted** string literal (so its single quotes need
-no escaping). The outer `FORMAT(""" ... """)` template is triple-quoted, so the single quotes around
-`<app_id>` / `<failing_schema_uri>` inside it are literal. (How each column is classified: see
+The recovery expression is embedded as a **triple-quoted** string literal (`'''…'''`, so its single
+quotes need no escaping and a wrapped paste can't break it). The outer `FORMAT(""" ... """)` template is
+triple-double-quoted, so the single quotes around `<app_id>` / `<failing_schema_uri>` inside it are
+literal. (How each column is classified: see
 `reference/strict-struct-typing.md`.)
 
 ```sql
