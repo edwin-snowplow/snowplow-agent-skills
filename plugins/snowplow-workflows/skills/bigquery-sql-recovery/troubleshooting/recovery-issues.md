@@ -70,16 +70,18 @@ values genuinely won't coerce (`_uncoercible > 0`), partition those rows off ins
 expected.
 
 **Likely cause.** With strict/`CAST` extractors a NULL means (a) a wrong JSON path — `data.<field>`
-doesn't match the actual key (typo, casing, nested deeper) — or (b) the key was genuinely **absent**
-in those rows (profiling's `_absent` count). A bad *value* would have errored, not NULLed, so it isn't
-that. (If you see NULLs from a coercion failure, someone used a `LAX_` accessor — switch it back to
-`CAST(JSON_VALUE(...) AS <TYPE>)`, which errors instead of hiding it.)
+doesn't match the actual key (typo, casing, nested deeper); (b) the key was genuinely **absent** in
+those rows (profiling's `_absent` count); or (c) the field was present but explicitly JSON `null`
+(profiling's `_json_null` count), which `CAST(JSON_VALUE(...))` turns into a SQL NULL. A bad *value*
+would have errored, not NULLed, so it isn't that. (If you see NULLs from a coercion failure, someone
+used a `LAX_` accessor — switch it back to `CAST(JSON_VALUE(...) AS <TYPE>)`, which errors instead of
+hiding it.)
 
 **Verify.** Run the payload-inspection query (`JSON_VALUE`) and re-check the profiling output
-(`_absent`, `_json_types`) for that field.
+(`_absent`, `_json_null`, `_json_types`) for that field.
 
-**Fix.** For (a) correct the path to the actual key. For (b) the field is missing in some rows: if the
-schema requires it, partition those rows off; if optional, the NULL is expected. Re-run the test SELECT
+**Fix.** For (a) correct the path to the actual key. For (b)/(c) the row carries no value: if the schema
+requires the field, partition those rows off; if optional, the NULL is expected. Re-run the test SELECT
 and re-check the gate in `reference/strict-struct-typing.md`.
 
 ---

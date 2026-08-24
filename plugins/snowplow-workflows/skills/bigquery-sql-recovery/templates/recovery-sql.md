@@ -174,6 +174,7 @@ SELECT
     -- one block per recovered field (swap <field> and its <TARGET_TYPE>, e.g. INT64):
     STRING_AGG(DISTINCT JSON_TYPE(d.<field>))                                           AS <field>_json_types,
     COUNTIF(JSON_TYPE(d.<field>) IS NULL)                                               AS <field>_absent,
+    COUNTIF(JSON_TYPE(d.<field>) = 'null')                                              AS <field>_json_null,
     COUNTIF(JSON_TYPE(d.<field>) NOT IN ('null')
             AND SAFE_CAST(JSON_VALUE(d.<field>) AS <TARGET_TYPE>) IS NULL)              AS <field>_uncoercible
 FROM prep;
@@ -185,8 +186,14 @@ in order:
 1. **Any `_uncoercible > 0`** → the failed rows do **not** share one recovery; some values can't become
    the target type. Do **not** suggest a recovery expression yet — list the offending rows and
    partition or narrow scope with the user first.
-2. **Any `_absent > 0`** → the field is missing from some rows. If the schema requires it, partition
-   those rows off; if it's optional, the extractor yields NULL for them (acceptable).
+2. **Any `_absent > 0` or `_json_null > 0`** → some rows carry no value for the field: it's either
+   missing (`_absent` — `JSON_TYPE` returns SQL `NULL`) or present but explicitly JSON `null`
+   (`_json_null` — `JSON_TYPE` returns the string `'null'`). Both extract to SQL `NULL`. The `_json_null`
+   counter exists because an explicit JSON `null` slips past *both* the `_absent` and `_uncoercible`
+   checks otherwise, and `CAST(JSON_VALUE(...))` would then write a silent NULL into the good table — the
+   exact silent-incomplete-recovery the no-`LAX` rule guards against. If the schema **requires** the
+   field, partition those rows off; if it's **optional**, NULL is an acceptable recovered value. Either
+   way, decide it with the user — don't let it pass unseen.
 3. Otherwise, per field: `_json_types` is exactly the **native** type (`number` for INT64/FLOAT64,
    `string` for STRING, `boolean` for BOOL) → use the **strict** accessor; a **wrong/mixed** encoding
    (e.g. `string`, or `number,string`) with `_uncoercible = 0` → use **`CAST(JSON_VALUE(...) AS <TYPE>)`**.

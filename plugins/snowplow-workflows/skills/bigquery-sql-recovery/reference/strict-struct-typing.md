@@ -56,8 +56,11 @@ the target type, then pick the strictest option the data supports. In order:
 
 1. **Any field has `_uncoercible > 0`** → the failed rows don't share one recovery — stop, surface the
    offending rows, and partition/scope with the user. Don't suggest a recovery expression yet.
-2. **Any field has `_absent > 0`** → it's missing from some rows: partition those off if the schema
-   requires the field; if optional, the extractor returns NULL for them (fine).
+2. **Any field has `_absent > 0` or `_json_null > 0`** → some rows carry no value: the field is missing
+   (`_absent`) or present but explicitly JSON `null` (`_json_null` — which BigQuery would otherwise slip
+   past *both* `_absent` and `_uncoercible`, landing a silent NULL in the good table). Both extract to
+   SQL NULL. Partition those rows off if the schema requires the field; if optional, NULL is an
+   acceptable recovered value. Decide with the user.
 3. **Per field, once all are coercible:**
    - `_json_types` is exactly the **native** type (`number` for INT64/FLOAT64, `string` for STRING,
      `boolean` for BOOL) → **strict accessor** (`INT64()/STRING()/FLOAT64()/BOOL()`) — reads the native
@@ -77,7 +80,8 @@ Confirm all of these against the pasted test-SELECT output before generating the
    coerces to its target type, and the chosen extractors (strict or `CAST(JSON_VALUE(...))`) **error**
    on a bad value rather than silently NULLing — so a test SELECT that runs clean is strong proof the
    casts hold. If a *required* field shows unexpected NULLs, a JSON path is wrong; an *optional* field
-   may be NULL where the value was absent (profiling's `_absent` count told you which).
+   may be NULL where the value was absent or explicitly JSON `null` (profiling's `_absent` / `_json_null`
+   counts told you which).
 2. **Struct shape matches the target** — the reconstructed struct's field names, types, and order
    match the recovery column's `data_type` exactly (this is what the positional INSERT requires), and
    `_schema_version` is present as the first field.
