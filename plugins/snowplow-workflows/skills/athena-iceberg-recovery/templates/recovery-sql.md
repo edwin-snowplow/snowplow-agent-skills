@@ -298,10 +298,12 @@ DROP TABLE <staging_database>.<staging_table>;
 
 ### Direct-path time travel (compare before/after)
 
-Iceberg time travel compares the good table before/after a direct-path INSERT:
+Iceberg time travel compares the good table before/after a direct-path INSERT. Use Athena **engine v3**
+syntax — `FOR TIMESTAMP AS OF` (the older `FOR SYSTEM_TIME AS OF` is engine v2, which Iceberg tables
+reject):
 
 ```sql
-SELECT COUNT(*) FROM <good_db>.<good_table> FOR SYSTEM_TIME AS OF TIMESTAMP '2024-01-15 12:00:00'
+SELECT COUNT(*) FROM <good_db>.<good_table> FOR TIMESTAMP AS OF TIMESTAMP '2024-01-15 12:00:00'
 ```
 
 ---

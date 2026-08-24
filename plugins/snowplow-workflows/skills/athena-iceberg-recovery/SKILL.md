@@ -231,8 +231,8 @@ Classification details and failure modes: `reference/column-classification-and-v
 ### Phase 8 — Run, validate, promote
 If the duplicate pre-check was skipped in Phase 2 and there's any doubt, offer it once more. Run the
 INSERT into the chosen target; validate what landed (row count + spot-check the recovered column).
-- **Direct path:** done. Optionally compare before/after with Iceberg `FOR SYSTEM_TIME AS OF`
-  time travel (`templates/recovery-sql.md`).
+- **Direct path:** done. Optionally compare before/after with Iceberg `FOR TIMESTAMP AS OF` time travel
+  (Athena engine v3 — `templates/recovery-sql.md`).
 - **Staging path:** promote (`INSERT INTO <good> SELECT * FROM <staging>`), re-validate, then offer to
   `DROP TABLE` the staging table.
 
