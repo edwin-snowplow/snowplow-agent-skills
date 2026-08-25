@@ -186,6 +186,8 @@ unnested AS (
     SELECT prep.*, failure_ctx.data AS failure_data
     FROM prep
     CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)
+    WHERE failure_ctx.schema = '<failing_schema_uri>'
+    -- mixed-source schema only: AND json_extract_scalar(failure_ctx.errors[1], '$.source') = '<source>'
 )
 SELECT
     event_id,
@@ -228,6 +230,8 @@ unnested AS (
         failure_ctx.data AS failure_data
     FROM prep
     CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)
+    WHERE failure_ctx.schema = '<failing_schema_uri>'
+    -- mixed-source schema only: AND json_extract_scalar(failure_ctx.errors[1], '$.source') = '<source>'
 )
 SELECT
     <comma-separated SELECT expressions in the same column order>
@@ -239,6 +243,10 @@ FROM unnested;
   `TARGET_DATABASE`/`TARGET_TABLE` on the generator for the staging path.
 - The recovery column carries the validated Phase-4 expression; the failure column is excluded
   entirely; `load_tstamp` is refreshed to `current_timestamp`.
+- The `unnested` CTE filters `failure_ctx.schema` (and the source, for a mixed-source schema) so an
+  event with a **multi-entry failure array** yields one row for the recovered entity, not one per
+  failed entity. Without it the `UNNEST` fans the event into N rows — the same `event_id` inserted
+  several times, each built from a different entry's payload.
 - How each column is classified (pass-through vs null-cast, Hive→Athena type conversion,
   reserved-word quoting): `reference/column-classification-and-validation.md`.
 

@@ -164,12 +164,22 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
     # its own column. errors is array(varchar) of JSON strings (1-based), so read
     # source with json_extract_scalar, not a struct field access.
     source_predicate = ""
+    unnested_source = ""
     if cfg.get("FAILURE_SOURCE"):
         source_safe = cfg["FAILURE_SOURCE"].replace("'", "''")
         source_predicate = (
             "      AND json_extract_scalar(contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1], '$.source')"
             f"\n          = '{source_safe}'\n"
         )
+        unnested_source = (
+            "      AND json_extract_scalar(failure_ctx.errors[1], '$.source')"
+            f" = '{source_safe}'\n"
+        )
+
+    # Scope the unnested failure entries to the schema (and source) being recovered,
+    # so an event with a multi-entry failure array doesn't fan out into duplicate
+    # event_id rows built from another entry's payload.
+    unnested_where = f"    WHERE failure_ctx.schema = '{schema_safe}'\n" + unnested_source
 
     sql = (
         f"INSERT INTO {target_db}.{target_tbl} (\n    "
@@ -182,7 +192,9 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
         + source_predicate
         + "),\n"
         + "unnested AS (\n    SELECT\n        prep.*,\n        failure_ctx.data AS failure_data\n    FROM prep\n"
-        + "    CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)\n)\n"
+        + "    CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)\n"
+        + unnested_where
+        + ")\n"
         + "SELECT\n    " + ",\n    ".join(select_exprs) + "\nFROM unnested;"
     )
     return sql, insert_cols, passthrough, nulled
