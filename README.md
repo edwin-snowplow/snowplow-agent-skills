@@ -72,7 +72,11 @@ Where a `snowplow-workflows` skill needs Console access and the `snowplow` plugi
 
 |Skill|What it does|
 |---|---|
-| — | Planned — no skills shipped yet. See [Roadmap](#roadmap) for the box-by-box mapping (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
+| `athena-iceberg-recovery` | Recovers Snowplow failed events from an Athena/Iceberg failed-events table back into the good atomic events table — generates the validation-gated recovery SQL, one skill per warehouse. |
+| `bigquery-sql-recovery` | Recovers Snowplow failed events from a BigQuery failed-events table back into the good atomic events table — validation-gated recovery SQL, built in-warehouse. |
+| `databricks-sql-recovery` | Recovers Snowplow failed events from a Databricks failed-events table back into the good atomic events table — validation-gated recovery SQL, assembled by a bundled script. |
+| `snowflake-sql-recovery` | Recovers Snowplow failed events from a Snowflake failed-events table back into the good atomic events table — validation-gated recovery SQL, built in-warehouse. |
+| — | More Analyst skills planned — see [Roadmap](#roadmap) (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
 
 ### Governance & Migration
 
