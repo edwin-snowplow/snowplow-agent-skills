@@ -7,8 +7,9 @@ each other column is classified. This is the judgment layer behind the INSERT ge
 
 Like the Athena flow, the wide INSERT is assembled by a **local script** (`scripts/generate_insert.py`)
 from the good and failed tables' `information_schema.columns` pastes — not by an in-warehouse generator
-query, because Databricks' result-grid copy strips single quotes from a generated SQL cell (see
-`troubleshooting/recovery-issues.md`). The classification below is what the script applies per column;
+query, because building the INSERT as a Spark string literal means every quote in the payload must be
+backslash-escaped and one wrong escape silently drops it (see `troubleshooting/recovery-issues.md`). The
+classification below is what the script applies per column;
 the in-warehouse generator (kept only as a no-Python fallback) applies the same rules. Like the
 Athena/BigQuery flow, Databricks struct typing is **strict**: the reconstructed entity's field names,
 types, and order must match the target column's type.

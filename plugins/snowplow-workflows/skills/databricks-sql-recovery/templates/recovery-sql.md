@@ -219,8 +219,9 @@ target column and the wrapper differ.)
 `STRUCT(CAST(...) AS user_id, ...)` (positional fields with `AS name`) is an equivalent form, but
 `NAMED_STRUCT` makes the field names explicit and is preferred. Do **not** append `AS <column_name>`
 here — the generator adds it. When embedding this into the in-warehouse generator query (Phase 7
-fallback), it is placed inside a **single-quoted** string literal, so **double every single quote**
-inside the expression (`'1-0-0'` → `''1-0-0''`, `'$.user_id'` → `''$.user_id''`).
+fallback), it is placed inside a **single-quoted** string literal, so **backslash-escape every single
+quote** inside the expression (`'1-0-0'` → `\'1-0-0\'`, `'$.user_id'` → `\'$.user_id\'`). Spark has no
+`''` escape — a doubled quote coalesces and the quote disappears.
 
 ## Test SELECT (Phase 4 — run and validate before the INSERT)
 
@@ -273,9 +274,9 @@ proceeding. (A nullable/optional field may legitimately be NULL; judge against t
 ## Generate the INSERT with the local script (Phase 7 — PRIMARY)
 
 The good table has ~130 columns and the INSERT is positional, so the column list and order come from
-metadata. `scripts/generate_insert.py` assembles the whole statement **locally** and writes it to a
-`.sql` file — nothing quote-laden is copied out of a Databricks result cell, so no single quotes get
-stripped in transit (see the fallback caveat below for why that matters).
+metadata. `scripts/generate_insert.py` assembles the whole statement **locally** in Python and writes it
+to a `.sql` file — the SQL never passes through a string-literal layer, so there are no single quotes to
+escape and nothing can silently coalesce away (see the fallback caveat below for why that matters).
 
 ### Step 1 — column-metadata queries (the user runs both, pastes each result)
 
@@ -305,7 +306,7 @@ ORDER BY ordinal_position;
 
 Save the two pastes (`good_columns.txt`, `failed_columns.txt`), the validated Phase-4 recovery
 expression (`recovery_expression.sql`, **single quotes stay single** — it is *not* embedded in a
-string literal here, so do **not** double them), and a `config.json`:
+string literal here, so do **not** escape them), and a `config.json`:
 
 ```json
 {
@@ -354,15 +355,16 @@ present in failed table → pass-through; good-only → `CAST(NULL AS <type>)`. 
 
 > **Use this only when the user can't run the local script.** It joins the good and failed tables'
 > `INFORMATION_SCHEMA.COLUMNS`, classifies each column, and emits the **full INSERT as a single text
-> cell** for the user to copy and run. **The catch:** Databricks' result-grid "copy as plain text"
-> **strips single-quote characters**, so the copied statement can arrive with its string literals
-> unquoted (e.g. `'test-app'` → `test-app`) and won't parse. If you use this path, tell the user to
-> copy from the **expanded/raw cell** (not the grid preview) and confirm the quotes survived before
-> running — or better, switch to the script above, which avoids the round-trip entirely.
+> cell** for the user to copy and run. **The catch:** the whole INSERT is built as one Spark string
+> literal, so every single quote in the payload must be **backslash-escaped** (`\'`). Spark has no `''`
+> escape — a doubled quote coalesces into nothing, so `app_id = ''test-app''` emits as `app_id = test-app`
+> and won't parse, with no error to warn you. Get one escape wrong and the statement silently loses a
+> quote. The local script above sidesteps this entirely, so prefer it whenever Python is available.
 
 Fill in every `<placeholder>`. The recovery expression is embedded inside a **single-quoted** string
-literal, so **every single quote inside it must be doubled** (`''`) — this doubling is *only* for this
-in-warehouse form; the script path takes the expression with single quotes. `array_sort` orders the
+literal, so **every single quote inside it must be backslash-escaped** (`\'`) — this escaping is *only*
+for this in-warehouse form; the script path takes the expression with its single quotes unchanged.
+`array_sort` orders the
 emitted expressions by `ordinal_position` (its first struct field) so the INSERT is positional and
 lines up with the good table — `collect_list` alone does not guarantee order. (How each column is
 classified: see `reference/strict-typing-and-classification.md`.)
@@ -411,8 +413,8 @@ SELECT concat(
     '  SELECT *\n',
     '  FROM <failed_catalog>.<failed_schema>.<failed_table>\n',
     '  WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)\n',
-    '    AND app_id = ''<app_id>''\n',
-    '    AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = ''<failing_schema_uri>''\n',
+    '    AND app_id = \'<app_id>\'\n',
+    '    AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = \'<failing_schema_uri>\'\n',
     ')\n',
     'SELECT\n    ',
     columns_sql,
@@ -428,8 +430,8 @@ Notes:
 - The generated INSERT is **positional** (no explicit column list): the SELECT expressions are
   emitted in good-table `ordinal_position` order, so they land in the right columns. This is why the
   recovery struct's field order should match the target type.
-- `<recovery_expression>` is the validated Phase-4 expression with **every single quote doubled**,
-  inserted verbatim inside the single-quoted CASE branch; `<recovery_column>` is the entity column name.
+- `<recovery_expression>` is the validated Phase-4 expression with **every single quote backslash-escaped**
+  (`\'`), inserted verbatim inside the single-quoted CASE branch; `<recovery_column>` is the entity column name.
 - Before the user runs the generated INSERT, review it: recovery column carries the expression,
   failure column nulled, `load_tstamp` refreshed, and the column count matches the good table. If the
   recovery column wasn't matched (its expression is missing), check `<recovery_column>` against the

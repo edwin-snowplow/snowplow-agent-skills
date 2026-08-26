@@ -86,29 +86,27 @@ flow).
 
 ---
 
-## The generated INSERT lost its single quotes when copied (won't parse)
+## The in-warehouse generator's INSERT comes out with unquoted string literals (won't parse)
 
-**Symptom.** You used the **in-warehouse** INSERT-generator (the fallback), copied the returned cell,
-and the pasted statement fails to parse — string literals appear unquoted (`app_id = test-app` instead
-of `app_id = 'test-app'`, `'1-0-0'` → `1-0-0`, `'$.field'` → `$.field`). The structure and newlines
-are intact; only the single-quote characters are gone.
+**Symptom.** You used the **in-warehouse** INSERT-generator (the fallback), ran it, and the emitted
+statement fails to parse — string literals appear unquoted (`app_id = test-app` instead of
+`app_id = 'test-app'`, `'1-0-0'` → `1-0-0`, `'$.field'` → `$.field`). The structure and newlines are
+intact; only the single-quote characters are gone.
 
-**Likely cause.** Not a bug in the generator — its escaping is correct and the string *in the warehouse*
-does contain the quotes (confirmed identical to the official Snowplow docs' generator). Databricks'
-result-grid **"copy as plain text" strips single-quote characters** when copying a string cell. The
-loss happens entirely in the clipboard round-trip, so re-running the generator produces the same
-stripped result.
+**Likely cause.** A single quote inside the generator's string literals was written as a doubled `''`
+instead of a backslash escape (`\'`). Spark SQL has no `''` escape: `'a''b'` is read as two adjacent
+literals that coalesce to `ab`, so every doubled quote silently disappears. This most often bites the
+embedded recovery expression (its `'1-0-0'`, `'$.field'` quotes) and the `app_id` / schema-URI
+predicates.
 
-**Verify.** Open the full cell in Databricks directly (expand it / view the raw value, don't rely on
-the grid preview) — the quotes are present on screen. The loss only appears in what lands in your
-editor after copy.
+**Verify.** Look at the generator's `concat(...)` literals and the substituted `<recovery_expression>`:
+any `''` is the culprit. A correctly escaped generator uses `\'` throughout.
 
-**Fix.** Use the **local script** path (`scripts/generate_insert.py`, Phase 7 primary in
-`templates/recovery-sql.md`): it assembles the INSERT locally from plain `column_name, full_data_type`
-pastes (which have no quotes to strip) and writes a runnable `.sql` file, so no quote-laden SQL ever
-goes through the clipboard. If you must stay on the in-warehouse generator, copy from the expanded/raw
-cell and confirm the quotes survived before running. Do **not** hand-restore the quotes into a stripped
-statement — regenerate cleanly instead.
+**Fix.** Backslash-escape every single quote in the embedded expression and predicates (`\'`), then
+re-run the generator. Better: switch to the **local script** (`scripts/generate_insert.py`, Phase 7
+primary in `templates/recovery-sql.md`), which assembles the INSERT in Python with no string-literal
+layer, so there is nothing to escape. Don't hand-restore quotes into an already-broken statement —
+regenerate cleanly instead.
 
 ---
 

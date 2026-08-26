@@ -61,10 +61,11 @@ confirmed against real Snowplow tables.
   — copy-safe), and `scripts/generate_insert.py` classifies each column (pass-through / null-cast /
   recovery / load_tstamp / failure) and writes the full INSERT to a `.sql` file locally.
   **Why a local script and not an in-warehouse generator:** the equivalent one-query generator builds
-  the whole INSERT as a string in a result cell, and Databricks' result-grid "copy as plain text"
-  **strips single-quote characters** — so the pasted statement won't parse (unquoted string literals).
-  Assembling locally keeps every quote intact. The in-warehouse generator is kept only as a fallback
-  for when local Python isn't available (`templates/recovery-sql.md`).
+  the whole INSERT as a single Spark string literal, so every single quote in the payload has to be
+  backslash-escaped (`\'`). Spark has no `''` escape — a doubled quote coalesces and the quote silently
+  vanishes, producing an unparseable INSERT with no error. Assembling locally in Python skips the
+  string-literal layer, so there's nothing to escape. The in-warehouse generator is kept only as a
+  fallback for when local Python isn't available (`templates/recovery-sql.md`).
 - **Strict struct typing.** Entity columns are native `ARRAY<STRUCT<...>>`.
   Delta resolves struct fields **by name**, so the reconstruction's field names must match exactly;
   keep types and order matching too. The shape is always read from ground truth
@@ -87,8 +88,9 @@ confirmed against real Snowplow tables.
   Capabilities) so the bundled script can run. It runs locally, off by default. In Claude Code it is
   available already.
 - **No local Python?** Fall back to the in-warehouse generator query (`templates/recovery-sql.md`), but
-  warn the user that Databricks' result-grid "copy as plain text" can strip its single quotes — they
-  must copy from the expanded cell and confirm the quotes survived before running.
+  warn the user that it embeds every value in a Spark string literal where each single quote must be
+  backslash-escaped (`\'`); a doubled `''` quote coalesces away, so review the generated INSERT for
+  intact quotes before running.
 
 ---
 
@@ -216,7 +218,7 @@ full script invocation):
    schema URI, app_id, window, and **`FAILURE_SOURCE`** = `contexts` or `unstruct` when the schema
    failed both ways — it scopes `prep` to the source you're recovering; omit for a single-source
    schema), and the **validated Phase-4 recovery expression** (single quotes stay **single** — no
-   doubling; it isn't embedded in a string literal) to files, and run the script. `RECOVERY_COLUMN` is
+   escaping; it isn't embedded in a string literal) to files, and run the script. `RECOVERY_COLUMN` is
    the `contexts_*` column for a contexts run or the `unstruct_event_*` column for an unstruct run. It
    prints a sanity summary (column counts, pass-through, nulled) and writes the full INSERT to a
    `.sql` file.
@@ -228,9 +230,9 @@ the script warns the recovery column wasn't matched, or the null-cast on the fai
 see `troubleshooting/recovery-issues.md`.
 
 **Fallback (no local Python):** the **in-warehouse INSERT-generator query** (`templates/recovery-sql.md`)
-builds the same INSERT as a single result cell — but warn the user that Databricks' plain-text copy can
-strip its single quotes; they must copy from the expanded/raw cell and confirm the quotes survived
-before running.
+builds the same INSERT as a single result cell — but warn the user that it embeds every value in a Spark
+string literal, so each single quote must be backslash-escaped (`\'`); a doubled `''` quote coalesces
+away and the INSERT won't parse. Review the generated statement for intact quotes before running.
 
 ### Phase 8 — Run, validate, promote
 If the duplicate pre-check was skipped in Phase 2 and there's any doubt, offer it once more. Run the

@@ -2,12 +2,13 @@
 """
 Generate the recovery INSERT statement for the databricks-sql-recovery skill.
 
-Why this exists: the in-warehouse generator builds the whole INSERT as a single
-string you copy out of a result cell. Databricks' result-grid "copy as plain
-text" strips single-quote characters, so the pasted statement won't parse
-(unquoted string literals). This script assembles the INSERT locally from
-plain-text metadata pastes instead, so no quotes ever travel through the
-clipboard. Mirrors the athena-iceberg-recovery script.
+Why this exists: the in-warehouse generator builds the whole INSERT as one
+string literal inside a generator query, so every single quote in the payload
+has to be backslash-escaped (\'). Spark has no '' escape -- a doubled quote
+coalesces into nothing and the quote silently vanishes, producing an
+unparseable INSERT with no error. This script assembles the INSERT locally in
+Python and writes the bytes directly, so there is no SQL string-literal layer
+to escape. Mirrors the athena-iceberg-recovery script.
 
 Non-interactive. Reads its inputs from files and prints the INSERT to stdout
 (or writes it with --out). Standard library only — runs on any local Python 3.6+.
@@ -50,8 +51,9 @@ skipped automatically.
 The recovery-expr file is the validated Phase-4 expression:
     ARRAY(NAMED_STRUCT('_schema_version','1-0-0', 'field', CAST(GET_JSON_OBJECT(...) AS T), ...))
 WITHOUT a trailing "AS <column>" (the script adds it). Single quotes stay single
-here — this file is read locally, not embedded in another string literal, so
-there is NO doubling as there is in the in-warehouse generator.
+here — this file is read locally and dropped straight into the SELECT, not
+embedded in another string literal, so it needs none of the backslash escaping
+the in-warehouse generator does.
 
 Prints a sanity summary (column counts, pass-through, nulled) to stderr.
 """
@@ -126,9 +128,9 @@ def time_filter(cfg):
     start = cfg.get("LOAD_TSTAMP_START")
     end = cfg.get("LOAD_TSTAMP_END")
     if start:
-        clause = "load_tstamp >= TIMESTAMP('%s')" % start.replace("'", "''")
+        clause = "load_tstamp >= TIMESTAMP('%s')" % start.replace("'", "\\'")
         if end:
-            clause += "\n      AND load_tstamp < TIMESTAMP('%s')" % end.replace("'", "''")
+            clause += "\n      AND load_tstamp < TIMESTAMP('%s')" % end.replace("'", "\\'")
         return clause
     return "DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), %s)" % int(cfg["DAYS_LOOKBACK"])
 
@@ -164,8 +166,8 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
             select_exprs.append("CAST(NULL AS %s) AS %s" % (dtype, name))
             nulled += 1
 
-    app_id_safe = cfg["APP_ID"].replace("'", "''")
-    schema_safe = cfg["FAILING_SCHEMA_URI"].replace("'", "''")
+    app_id_safe = cfg["APP_ID"].replace("'", "\\'")
+    schema_safe = cfg["FAILING_SCHEMA_URI"].replace("'", "\\'")
     target_cat = cfg.get("TARGET_CATALOG") or cfg["GOOD_CATALOG"]
     target_sch = cfg.get("TARGET_SCHEMA") or cfg["GOOD_SCHEMA"]
     target_tbl = cfg.get("TARGET_TABLE") or cfg["GOOD_TABLE"]
@@ -176,7 +178,7 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
     if cfg.get("FAILURE_SOURCE"):
         source_predicate = (
             "      AND GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source') = '%s'\n"
-            % cfg["FAILURE_SOURCE"].replace("'", "''")
+            % cfg["FAILURE_SOURCE"].replace("'", "\\'")
         )
 
     sql = (

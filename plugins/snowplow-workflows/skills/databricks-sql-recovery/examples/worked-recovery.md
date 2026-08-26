@@ -114,7 +114,7 @@ Had the user run the two column-metadata queries (good and failed
 `information_schema.columns`, `ORDER BY ordinal_position`) and pasted each result — plain
 `column_name, full_data_type`, so nothing was lost in the copy. Saved those as `good_columns.txt` /
 `failed_columns.txt`, the validated expression as `recovery_expression.sql` (single quotes left
-single — no doubling), and a `config.json` with `TARGET_* = acme_prod.atomic.events_recovery_staging`,
+single — no escaping), and a `config.json` with `TARGET_* = acme_prod.atomic.events_recovery_staging`,
 `RECOVERY_COLUMN = contexts_com_acme_user_entity_1`, and the same window/app_id/schema. Then:
 
 ```bash
@@ -127,8 +127,9 @@ The stderr summary confirmed the column counts (and that the recovery column was
 was a positional `INSERT ... WITH prep AS (...) SELECT ...` where the failure column is
 `CAST(NULL AS ...)`, `load_tstamp` is `CURRENT_TIMESTAMP()`, `contexts_com_acme_user_entity_1` carries
 the `ARRAY(NAMED_STRUCT(...))`, atomic columns pass through, and good-only columns are `CAST(NULL AS ...)`.
-Reviewed it, column count matched the good table. (The in-warehouse generator was avoided because its
-copied result cell loses single quotes — see `troubleshooting/recovery-issues.md`.)
+Reviewed it, column count matched the good table. (The in-warehouse generator was avoided because it
+builds the INSERT as a Spark string literal that needs every quote backslash-escaped — see
+`troubleshooting/recovery-issues.md`.)
 
 ## Phase 8 — run, validate, promote
 
