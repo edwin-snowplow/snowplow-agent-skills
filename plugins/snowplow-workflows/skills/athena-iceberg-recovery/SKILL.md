@@ -305,7 +305,7 @@ also carried (a passing `contexts_*`) is preserved automatically via pass-throug
 ## When this skill is *not* the right answer
 
 - **The event failed for a reason a data fix can't touch** — enrichment failures, adapter failures, or
-  a genuinely malformed event are out of scope; diagnose the `failure_type` first. (A **ResolutionError**
+  a genuinely malformed event are out of scope; diagnose the `failure_type` first with the `debug-failed-events` skill. (A **ResolutionError**
   is *not* automatically excluded — see "Recovering a ResolutionError" above.)
 - **The underlying values are genuinely unrecoverable** (not just mis-typed) — if the cast can't coerce
   the values (`_uncoercible > 0`), they may need fixing at the tracker/source, not backfilled.

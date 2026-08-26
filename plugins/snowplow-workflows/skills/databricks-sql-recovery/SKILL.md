@@ -299,7 +299,7 @@ it in its own column, and the recovery passes that column through untouched.
 ## When this skill is *not* the right answer
 
 - **The event failed for a reason a data fix can't touch** — enrichment failures, adapter failures,
-  or a genuinely malformed event are out of scope; diagnose the `failure_type` first. (A
+  or a genuinely malformed event are out of scope; diagnose the `failure_type` first with the `debug-failed-events` skill. (A
   **ResolutionError** is *not* automatically excluded — see "Recovering a ResolutionError" above.)
 - **The underlying values are genuinely unrecoverable** (not just mis-typed) — if profiling shows
   `_uncoercible > 0` and the values can't cast to the target type, they may need fixing at the
