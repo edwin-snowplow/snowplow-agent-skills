@@ -502,10 +502,15 @@ Confirms the events haven't already been recovered. The events being recovered o
 they failed validation, so any of their `event_id`s already present in the good table means a prior
 recovery — running again would duplicate them. **Expect 0.**
 
+The good-table side carries the **same `load_tstamp` window** as the failed side: a recovered row's
+`load_tstamp` is stamped at recovery time (after the failures landed), so the window that bounds the
+failed events safely bounds the good-table scan too, instead of scanning its full history.
+
 ```sql
 SELECT COUNT(*) AS already_in_good
 FROM <good_catalog>.<good_schema>.<good_table>
-WHERE event_id IN (
+WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
+  AND event_id IN (
     SELECT event_id
     FROM <failed_catalog>.<failed_schema>.<failed_table>
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
@@ -519,7 +524,8 @@ If it returns > 0, list the overlapping `event_id`s and warn before proceeding:
 ```sql
 SELECT g.event_id
 FROM <good_catalog>.<good_schema>.<good_table> g
-WHERE g.event_id IN (
+WHERE DATE(g.load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
+  AND g.event_id IN (
     SELECT event_id
     FROM <failed_catalog>.<failed_schema>.<failed_table>
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)

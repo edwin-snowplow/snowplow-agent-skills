@@ -408,10 +408,16 @@ Confirms the events haven't already been recovered. The events being recovered o
 they failed validation, so any of their `event_id`s already present in the good table means a prior
 recovery — running again would duplicate them. **Expect 0.**
 
+The good-table side carries the **same `load_tstamp` window** as the failed side. A recovered row's
+`load_tstamp` is stamped at recovery time, which is after the failures landed, so the window that bounds
+the failed events safely bounds the good-table scan too. Without it, `COUNT`/`LIMIT` still scans the
+full history of the good table on BigQuery (bytes billed ignore `LIMIT`).
+
 ```sql
 SELECT COUNT(*) AS already_in_good
 FROM `<good_project>.<good_dataset>.<good_table>`
-WHERE event_id IN (
+WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
+  AND event_id IN (
     SELECT event_id
     FROM `<failed_project>.<failed_dataset>.<failed_table>`
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
@@ -425,7 +431,8 @@ If it returns > 0, list the overlapping `event_id`s and warn before proceeding:
 ```sql
 SELECT g.event_id
 FROM `<good_project>.<good_dataset>.<good_table>` g
-WHERE g.event_id IN (
+WHERE DATE(g.load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
+  AND g.event_id IN (
     SELECT event_id
     FROM `<failed_project>.<failed_dataset>.<failed_table>`
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
