@@ -59,6 +59,7 @@ Prints a sanity summary (column counts, pass-through, nulled) to stderr.
 import argparse
 import csv
 import json
+import re
 import sys
 
 FAILURE_COL = "contexts_com_snowplowanalytics_snowplow_failure_1"
@@ -96,10 +97,13 @@ def parse_columns(output):
         columns.append((name, dtype))
 
     columns = []
+    overflow = 0
     if delim in ("\t", ",", "|"):
         # csv.reader handles quoted types that themselves contain the delimiter.
         for row in csv.reader(raw, delimiter=delim):
             cells = [c.strip() for c in row if c.strip() != ""]
+            if len(cells) > 2:
+                overflow += 1  # a type containing the delimiter wasn't quoted -> truncated
             if len(cells) >= 2:
                 keep(cells[0], cells[1])
     else:
@@ -107,6 +111,13 @@ def parse_columns(output):
             parts = line.strip().split(None, 1)  # split name from type on first ws
             if len(parts) >= 2:
                 keep(parts[0].strip(), parts[1].strip())
+    if overflow:
+        sys.stderr.write(
+            "WARNING: %d row(s) split into more than two %s-delimited fields; only the first two "
+            "were kept, so a type containing the delimiter (e.g. an unquoted 'array<struct<a,b>>') was "
+            "truncated. Re-paste with such types quoted, or copy the query result as CSV/tab.\n"
+            % (overflow, "tab" if delim == "\t" else delim)
+        )
     return columns
 
 
@@ -189,7 +200,11 @@ def read_file(path):
 
 def read_expr_file(path):
     lines = read_file(path).splitlines()
-    return "\n".join(l.rstrip() for l in lines if not l.strip().startswith("#")).strip()
+    expr = "\n".join(l.rstrip() for l in lines if not l.strip().startswith("#")).strip()
+    # Strip a trailing "AS <alias>" (e.g. copied from the Phase-4 test SELECT's
+    # "AS recovered") so the generator's own "AS <column>" doesn't produce the parse
+    # error "<expr> AS recovered AS <column>".
+    return re.sub(r"\s+AS\s+[`\"]?\w+[`\"]?\s*$", "", expr, flags=re.IGNORECASE)
 
 
 def main():

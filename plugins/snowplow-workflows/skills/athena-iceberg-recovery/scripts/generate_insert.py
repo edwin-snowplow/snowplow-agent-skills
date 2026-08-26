@@ -142,9 +142,8 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
         if name == "load_tstamp":
             select_exprs.append("-- fresh timestamp for reprocessed rows\n    current_timestamp AS load_tstamp")
         elif name == recovery_col:
-            expr = re.sub(r'\bAS\s+' + re.escape(recovery_col) + r'\s*$', '', recovery_expr,
-                          flags=re.IGNORECASE).strip()
-            select_exprs.append(f"{expr}\n    AS {name}")
+            # recovery_expr already had any trailing "AS <alias>" stripped in read_expr_file.
+            select_exprs.append(f"{recovery_expr}\n    AS {name}")
         elif name in ATOMIC_COLUMNS:
             select_exprs.append(name)
         elif name in failed_col_names:
@@ -207,7 +206,11 @@ def read_file(path):
 
 def read_expr_file(path):
     lines = read_file(path).splitlines()
-    return "\n".join(l.rstrip() for l in lines if not l.strip().startswith("#")).strip()
+    expr = "\n".join(l.rstrip() for l in lines if not l.strip().startswith("#")).strip()
+    # Strip a trailing "AS <alias>" (e.g. copied from the Phase-4 test SELECT's
+    # "AS recovered") so the generator's own "AS <column>" doesn't produce the parse
+    # error "<expr> AS recovered AS <column>".
+    return re.sub(r"\s+AS\s+[`\"]?\w+[`\"]?\s*$", "", expr, flags=re.IGNORECASE)
 
 
 def main():
