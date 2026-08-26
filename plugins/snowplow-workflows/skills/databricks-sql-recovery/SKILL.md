@@ -53,9 +53,9 @@ time.
 Read the relevant form at each phase rather than working from memory — they encode edge cases
 confirmed against real Snowplow tables.
 
-## What makes Databricks specific (a hybrid of the Snowflake and Athena flows)
+## What makes Databricks specific
 
-- **The wide INSERT is assembled by a local script (like Athena).** The good table has ~130 columns
+- **The wide INSERT is assembled by a local script.** The good table has ~130 columns
   and the INSERT is positional, so the column list and order come from metadata, not memory. The user
   pastes the good and failed tables' `information_schema.columns` (plain `column_name, full_data_type`
   — copy-safe), and `scripts/generate_insert.py` classifies each column (pass-through / null-cast /
@@ -65,20 +65,30 @@ confirmed against real Snowplow tables.
   **strips single-quote characters** — so the pasted statement won't parse (unquoted string literals).
   Assembling locally keeps every quote intact. The in-warehouse generator is kept only as a fallback
   for when local Python isn't available (`templates/recovery-sql.md`).
-- **Strict struct typing (like Athena/BigQuery).** Entity columns are native `ARRAY<STRUCT<...>>`.
+- **Strict struct typing.** Entity columns are native `ARRAY<STRUCT<...>>`.
   Delta resolves struct fields **by name**, so the reconstruction's field names must match exactly;
   keep types and order matching too. The shape is always read from ground truth
   (`reference/strict-typing-and-classification.md`).
 - **JSON payload is a STRING.** `data` is a JSON-serialised STRING, not a native JSON/VARIANT type.
   Read scalars with `GET_JSON_OBJECT(data, '$.field')` (returns STRING), then `CAST(... AS <type>)`.
-- **Casts and paths can fail silently — the biggest trap.** Unlike Snowflake and BigQuery (which error
-  on a bad cast, so a clean run proves the types), `GET_JSON_OBJECT` returns **NULL** on a bad path
-  (never errors), and `CAST` returns **NULL** on a bad value in legacy mode (it only errors under ANSI
-  mode, the default on Databricks SQL warehouses but not on every cluster). So **a clean run is not
-  sufficient evidence** — Phase 3.5 profiling pre-empts it, and Phase 5 must actively check for
-  unexpected NULLs (`reference/failure-context.md`).
+- **Casts and paths can fail silently — the biggest trap.** `GET_JSON_OBJECT` returns **NULL** on a bad
+  path (never errors), and `CAST` returns **NULL** on a bad value in legacy mode (it only errors under
+  ANSI mode, the default on Databricks SQL warehouses but not on every cluster). So a query that runs
+  clean is **not** proof the casts held — Phase 3.5 profiling pre-empts it, and Phase 5 must actively
+  check for unexpected NULLs (`reference/failure-context.md`).
 - **Zero-based array access.** `contexts_..._failure_1[0].data` (`element_at(col, 1)` is the 1-based
   equivalent; `try_element_at(col, 1)` returns NULL instead of erroring).
+
+## Prerequisites
+
+- **Python 3.6+ available locally.** Phase 7's primary path runs the bundled `scripts/generate_insert.py`
+  to assemble the INSERT deterministically. It is standard-library only — no packages to install.
+- **In Claude Desktop:** the user must enable **"Code execution and file creation"** (Settings →
+  Capabilities) so the bundled script can run. It runs locally, off by default. In Claude Code it is
+  available already.
+- **No local Python?** Fall back to the in-warehouse generator query (`templates/recovery-sql.md`), but
+  warn the user that Databricks' result-grid "copy as plain text" can strip its single quotes — they
+  must copy from the expanded cell and confirm the quotes survived before running.
 
 ---
 

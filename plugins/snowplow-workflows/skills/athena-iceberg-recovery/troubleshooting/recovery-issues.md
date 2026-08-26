@@ -64,6 +64,26 @@ automatically.
 
 ---
 
+## The generated INSERT is missing the recovery expression (recovery column passed through instead)
+
+**Symptom.** In the INSERT that `scripts/generate_insert.py` wrote, the entity column you're repairing
+appears as a bare pass-through column (or `CAST(NULL AS ...)`), not your
+`CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))` expression. The script also prints
+`WARNING: recovery column '<name>' not found in good DESCRIBE.` on stderr when this happens.
+
+**Likely cause.** The `RECOVERY_COLUMN` in `config.json` doesn't match the good table's actual column
+name — casing, the wrong major-version suffix, or a name derived from the Iglu URI instead of read from
+the good-table `DESCRIBE`.
+
+**Verify.** Re-read the good-table `DESCRIBE` and compare the real `column_name` to the `RECOVERY_COLUMN`
+value you set.
+
+**Fix.** Set `RECOVERY_COLUMN` to the exact column name from the `DESCRIBE` and re-run the script (it
+matches on `lower(...)`, so case aside it must be the same string). If several major versions came back,
+pick the one whose trailing `_<major>` matches the schema version being recovered.
+
+---
+
 ## Unexpected NULLs in the reconstructed column (query ran, but values are null)
 
 **Symptom.** The test SELECT shows a reconstructed field is NULL where a value was expected.

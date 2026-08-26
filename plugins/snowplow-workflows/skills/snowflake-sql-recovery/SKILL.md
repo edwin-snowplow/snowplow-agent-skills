@@ -52,8 +52,8 @@ confirmed against real Snowplow tables.
 ## What makes Snowflake specific
 
 - **The INSERT builds itself — no script.** A single metadata query joins the good and failed tables'
-  `INFORMATION_SCHEMA.COLUMNS`, classifies each column, and emits the full INSERT as text. This
-  replaces the Athena skill's `generate_insert.py` entirely.
+  `INFORMATION_SCHEMA.COLUMNS`, classifies each column, and emits the full INSERT as text. Everything
+  is SQL the user runs in Snowflake — there's no bundled script or local code execution to set up.
 - **No strict struct typing.** Entity columns are semi-structured `ARRAY`/`VARIANT`; you reconstruct
   with `ARRAY_CONSTRUCT(OBJECT_CONSTRUCT(...))` and `::TYPE` casts. There is **no** field-order
   requirement, **no** reserved-word quoting of keys (they're plain string literals), and **no**
