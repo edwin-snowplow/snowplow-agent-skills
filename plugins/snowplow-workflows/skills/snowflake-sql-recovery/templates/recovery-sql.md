@@ -141,7 +141,8 @@ SELECT
     TYPEOF(<recovery_column>[0]:field1)               AS field1_type,
     TYPEOF(<recovery_column>[0]:field2)               AS field2_type
 FROM <good_database>.<good_schema>.<good_table>
-WHERE <recovery_column> IS NOT NULL
+WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'  -- recent sample; widen if 0 rows
+  AND <recovery_column> IS NOT NULL
   AND ARRAY_SIZE(<recovery_column>) > 0
 LIMIT 10;
 ```
@@ -156,15 +157,18 @@ SELECT
     TYPEOF(<recovery_column>:field1)                  AS field1_type,
     TYPEOF(<recovery_column>:field2)                  AS field2_type
 FROM <good_database>.<good_schema>.<good_table>
-WHERE <recovery_column> IS NOT NULL
+WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'  -- recent sample; widen if 0 rows
+  AND <recovery_column> IS NOT NULL
 LIMIT 10;
 ```
 
 The `TYPEOF()` of each field on a known-good row is the target type your `::TYPE` casts must produce.
-If the good table has **no** validated events for this entity yet (e.g. a brand-new schema), fall
-back to reading the field types and `required` list from the **Iglu schema JSON** — ask the user for
-it or its URL. Do not infer types from the failed payload alone (the values are exactly what failed
-validation).
+The `load_tstamp` bound above is only there to keep the scan cheap — unlike the failed-side windows it
+is **not** a correctness filter, so if the query returns nothing, **widen or drop it** before drawing
+any conclusion: a validated example may simply predate the window. If the good table genuinely has
+**no** validated events for this entity yet (e.g. a brand-new schema), fall back to reading the field
+types and `required` list from the **Iglu schema JSON** — ask the user for it or its URL. Do not infer
+types from the failed payload alone (the values are exactly what failed validation).
 
 ## Field profiling & coercibility confirmation (Phase 3.5 — gate before building the expression)
 
@@ -412,29 +416,16 @@ SELECT COUNT(*) FROM <good_table> AT (TIMESTAMP => '2024-01-15 12:00:00'::TIMEST
 
 Confirms the events haven't already been recovered. The events being recovered only exist because
 they failed validation, so any of their `event_id`s already present in the good table means a prior
-recovery — running again would duplicate them. **Expect 0.**
+recovery — running again would duplicate them. This one query **is** the whole check: it lists any
+already-recovered `event_id`s, so an empty result is the all-clear and any rows are exactly the ones to
+investigate. **Expect no rows.** (No separate `COUNT(*)` pass — it would scan the same data twice.)
 
 The good-table side carries the **same `load_tstamp` window** as the failed side: a recovered row's
 `load_tstamp` is stamped at recovery time (after the failures landed), so the window that bounds the
 failed events safely bounds the good-table scan too, instead of scanning its full history.
 
 ```sql
-SELECT COUNT(*) AS already_in_good
-FROM <good_database>.<good_schema>.<good_table>
-WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
-  AND event_id IN (
-    SELECT event_id
-    FROM <failed_database>.<failed_schema>.<failed_table>
-    WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
-      AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
-);
-```
-
-If it returns > 0, list the overlapping `event_id`s and warn before proceeding:
-
-```sql
-SELECT g.event_id
+SELECT g.event_id AS already_in_good
 FROM <good_database>.<good_schema>.<good_table> g
 WHERE g.load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
   AND g.event_id IN (
@@ -443,5 +434,8 @@ WHERE g.load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
     WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
       AND app_id = '<app_id>'
       AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
-);
+  );
 ```
+
+Any rows returned are the overlapping `event_id`s — decide with the user (stop, narrow scope, or
+proceed knowingly).

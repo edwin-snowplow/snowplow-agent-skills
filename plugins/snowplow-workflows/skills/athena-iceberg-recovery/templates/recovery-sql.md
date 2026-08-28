@@ -321,35 +321,26 @@ SELECT COUNT(*) FROM <good_db>.<good_table> FOR TIMESTAMP AS OF TIMESTAMP '2024-
 
 Confirms the events haven't already been recovered. The events being recovered only exist because
 they failed validation, so any of their `event_id`s already present in the good table means a prior
-recovery — running again would duplicate them. **Expect 0.**
+recovery — running again would duplicate them. This one query **is** the whole check: it lists any
+already-recovered `event_id`s, so an empty result is the all-clear and any rows are exactly the ones to
+investigate. **Expect no rows.** (No separate `COUNT(*)` pass — it would scan the same data twice.)
 
 The good-table side carries the **same `load_tstamp` window** as the failed side: a recovered row's
 `load_tstamp` is stamped at recovery time (after the failures landed), so the window that bounds the
 failed events safely bounds the good-table scan too, instead of scanning its full history.
 
 ```sql
-SELECT COUNT(*) AS already_in_good
-FROM <good_database>.<good_table>
-WHERE load_tstamp > current_timestamp - interval '<days>' day
-  AND event_id IN (
+SELECT g.event_id AS already_in_good
+FROM <good_database>.<good_table> g
+WHERE g.load_tstamp > current_timestamp - interval '<days>' day
+  AND g.event_id IN (
     SELECT event_id
     FROM <failed_database>.<failed_table>
     WHERE load_tstamp > current_timestamp - interval '<days>' day
       AND app_id = '<app_id>'
       AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
-);
+  );
 ```
 
-If it returns > 0, list the overlapping `event_id`s and warn before proceeding:
-
-```sql
-SELECT g.event_id
-FROM <good_database>.<good_table> g
-WHERE g.load_tstamp > current_timestamp - interval '<days>' day
-  AND g.event_id IN (
-    SELECT event_id FROM <failed_database>.<failed_table>
-    WHERE load_tstamp > current_timestamp - interval '<days>' day
-      AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
-);
-```
+Any rows returned are the overlapping `event_id`s — decide with the user (stop, narrow scope, or
+proceed knowingly).

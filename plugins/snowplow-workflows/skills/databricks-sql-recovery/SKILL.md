@@ -130,9 +130,9 @@ haven't already been recovered; don't silently skip it:
 > "Want me to check whether these events have already been recovered before? You can skip this if
 > you know this schema has never been recovered."
 
-If they want it, give the **duplicate pre-check** query (`templates/recovery-sql.md`). Expect **0** —
-if > 0, list the overlapping `event_id`s and decide with the user (stop, narrow scope, or proceed
-knowingly). If they skip, note it and move on.
+If they want it, give the **duplicate pre-check** query (`templates/recovery-sql.md`). It lists any
+`event_id`s already in the good table — expect **none**. If any come back, decide with the user (stop,
+narrow scope, or proceed knowingly). If they skip, note it and move on.
 
 Then, if the failing schema is a **custom schema** (your own vendor, not a Snowplow / Iglu Central
 one), **ask the user to paste the Iglu JSON schema** for it (or its registry URL). Not strictly
