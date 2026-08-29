@@ -41,36 +41,6 @@ import sys
 
 FAILURE_COL = "contexts_com_snowplowanalytics_snowplow_failure_1"
 
-ATOMIC_COLUMNS = set("""
-app_id platform etl_tstamp collector_tstamp dvce_created_tstamp event event_id txn_id
-name_tracker v_tracker v_collector v_etl user_id user_ipaddress user_fingerprint
-domain_userid domain_sessionidx network_userid geo_country geo_region geo_city geo_zipcode
-geo_latitude geo_longitude geo_region_name ip_isp ip_organization ip_domain ip_netspeed
-page_url page_title page_referrer page_urlscheme page_urlhost page_urlport page_urlpath
-page_urlquery page_urlfragment refr_urlscheme refr_urlhost refr_urlport refr_urlpath
-refr_urlquery refr_urlfragment refr_medium refr_source refr_term mkt_medium mkt_source
-mkt_term mkt_content mkt_campaign se_category se_action se_label se_property se_value
-tr_orderid tr_affiliation tr_total tr_tax tr_shipping tr_city tr_state tr_country ti_orderid
-ti_sku ti_name ti_category ti_price ti_quantity pp_xoffset_min pp_xoffset_max pp_yoffset_min
-pp_yoffset_max useragent br_name br_family br_version br_type br_renderengine br_lang
-br_features_pdf br_features_flash br_features_java br_features_director br_features_quicktime
-br_features_realplayer br_features_windowsmedia br_features_gears br_features_silverlight
-br_cookies br_colordepth br_viewwidth br_viewheight os_name os_family os_manufacturer
-os_timezone dvce_type dvce_ismobile dvce_screenwidth dvce_screenheight doc_charset doc_width
-doc_height tr_currency tr_total_base tr_tax_base tr_shipping_base ti_currency ti_price_base
-base_currency geo_timezone mkt_clickid mkt_network etl_tags dvce_sent_tstamp refr_domain_userid
-refr_dvce_tstamp domain_sessionid derived_tstamp event_vendor event_name event_format
-event_version event_fingerprint true_tstamp load_tstamp
-""".split())
-
-RESERVED = set("""
-current_time current_date current_timestamp timestamp date time interval year month day hour
-minute second zone value values table column row type position filter over partition range
-select from where group order by having limit union all distinct as in not and or is null
-true false case when then else end exists between like natural cross join inner outer left
-right full on using
-""".split())
-
 
 def strip_partition_spec(text):
     lines = []
@@ -98,22 +68,21 @@ def parse_describe(output):
 
 
 def hive_to_athena_type(hive_type):
-    t = re.sub(r'array<', 'array(', hive_type)
-    t = re.sub(r'struct<', 'row(', t)
+    # Hive DESCRIBE type -> Trino/Athena type. Rewrite the container keywords and
+    # the angle brackets, quote every struct field name, then translate the scalar
+    # keywords that differ (string->varchar, int->integer).
+    t = re.sub(r'\barray<', 'array(', hive_type)
+    t = re.sub(r'\bstruct<', 'row(', t)
+    t = re.sub(r'\bmap<', 'map(', t)
     t = t.replace('>', ')')
-    t = re.sub(r'(\w+):', r'\1 ', t)
-
-    def quote_reserved(m):
-        word = m.group(1)
-        return f'"{word}"' if word.lower() in RESERVED else word
-
-    t = re.sub(
-        r'(?<!")\b([a-z_][a-z0-9_]*)(?=\s+(?:varchar|string|bigint|integer|int|double|boolean|decimal|timestamp|array|row|struct))',
-        quote_reserved, t,
-    )
-    t = re.sub(r'\bstring\b', 'varchar', t)
-    t = re.sub(r'\bint\b', 'integer', t)
-    t = re.sub(r'decimal\((\d+),\s*(\d+)\)', r'decimal(\1,\2)', t)
+    # struct field "name:type" -> quote the name, drop the colon. Quoting *every*
+    # field name unconditionally is always safe in a Trino row type and protects a
+    # field named after a reserved word or a type keyword (e.g. date, float, int).
+    t = re.sub(r'([A-Za-z_][A-Za-z0-9_]*)\s*:', r'"\1" ', t)
+    # Scalar keyword translation, skipping anything inside the quotes just added so
+    # a field literally named "int"/"string" is left alone.
+    t = re.sub(r'(?<!")\bstring\b(?!")', 'varchar', t)
+    t = re.sub(r'(?<!")\bint\b(?!")', 'integer', t)
     t = re.sub(r'  +', ' ', t)
     return t
 
@@ -144,9 +113,10 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
         elif name == recovery_col:
             # recovery_expr already had any trailing "AS <alias>" stripped in read_expr_file.
             select_exprs.append(f"{recovery_expr}\n    AS {name}")
-        elif name in ATOMIC_COLUMNS:
-            select_exprs.append(name)
         elif name in failed_col_names:
+            # Present in the failed table (atomic columns and any materialised sibling
+            # entity) -> copy it straight through. Membership is the classifier; no
+            # hardcoded atomic-column list needed, matching the Databricks sibling.
             select_exprs.append(name)
             passthrough += 1
         else:

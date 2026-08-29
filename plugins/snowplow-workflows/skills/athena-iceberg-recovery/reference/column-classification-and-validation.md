@@ -29,18 +29,18 @@ For every column in the **good** events table DESCRIBE, decide its SELECT expres
 3. **The recovery column** (the entity being repaired) → the user's confirmed `CAST(ARRAY[ROW(...)] AS
    ARRAY(ROW(...)))` expression, followed by `AS <column_name>`. Strip any trailing `AS <column_name>`
    the user already included before re-adding it.
-4. **Atomic column** (present in the canonical atomic set below) → pass through by name.
-5. **Custom column also present in the failed table DESCRIBE** → pass through by name (it can hold
-   values for events that failed on a *different* entity).
-6. **Custom column only in the good table** → `CAST(NULL AS <athena_type>) AS <column_name>`.
+4. **Any other column present in the failed table DESCRIBE** → pass through by name. This one rule
+   covers both the atomic columns (the failed events table carries the full atomic set) and any
+   materialised sibling entity (which can hold values for events that failed on a *different* entity).
+5. **Column only in the good table** → `CAST(NULL AS <athena_type>) AS <column_name>`.
 
 After classifying, report a sanity summary to the user:
-`good columns: N | failed columns: M | custom pass-through: P | custom nulled: Q`.
+`good columns: N | failed columns: M | pass-through: P | nulled: Q`.
 Warn if the recovery column name is not found in the good DESCRIBE.
 
-Because the failed events table already contains every atomic column, the good-vs-failed comparison
-does the atomic-vs-custom classification for you; the canonical atomic set below is retained for
-reference and for the fallback when building the INSERT inline.
+Because the failed events table already contains every atomic column, the good-vs-failed membership
+comparison *is* the atomic-vs-custom classification — no hardcoded atomic-column list is needed. (The
+Databricks sibling script classifies the same way.)
 
 ## Hive → Athena type conversion
 
@@ -53,11 +53,15 @@ DESCRIBE output uses Hive DDL types. Convert to Athena query-expression types fo
 | `int` | `integer` |
 | `array<...>` | `array(...)` |
 | `struct<...>` | `row(...)` |
-| `field:type` (colon separator) | `field type` (space separator) |
-| `decimal(18, 2)` | `decimal(18,2)` (no space) |
+| `map<k,v>` | `map(k,v)` |
+| `field:type` (colon separator) | `"field" type` (quoted name, space separator) |
 
-Mechanical steps: `array<`→`array(`, `struct<`→`row(`, every `>`→`)`, `name:`→`name `,
-`string`→`varchar`, `int`→`integer`, remove the space inside `decimal(p, s)`.
+Mechanical steps: `array<`→`array(`, `struct<`→`row(`, `map<`→`map(`, every `>`→`)`, quote every struct
+field name and drop its colon (`name:`→`"name" `), then `string`→`varchar` and `int`→`integer` on the
+*type* tokens only. Quoting every field name unconditionally is always safe in a Trino row type and
+protects a field named after a reserved word or a type keyword (`date`, `float`, `int`, `map`, …); the
+keyword substitutions skip anything already inside quotes, so a field literally named `int` or `string`
+is left intact.
 
 ### Reserved words inside ROW(...) definitions
 
@@ -121,39 +125,3 @@ Confirm all of these against the pasted test-SELECT output before generating the
 If any check fails, fix the recovery expression and re-run the test SELECT (return to Phase 4). Only
 generate the INSERT once the type matches and the values are correct. When a check fails and the cause
 isn't obvious, see `troubleshooting/recovery-issues.md`.
-
-## Canonical atomic column set
-
-A column is "atomic" (pass through by name, never null-cast) if its name is in this set.
-Anything else is a custom `contexts_*` / `unstruct_event_*` column and follows the
-pass-through-vs-null rule.
-
-```
-app_id platform etl_tstamp collector_tstamp dvce_created_tstamp
-event event_id txn_id name_tracker v_tracker v_collector v_etl
-user_id user_ipaddress user_fingerprint domain_userid domain_sessionidx
-network_userid geo_country geo_region geo_city geo_zipcode
-geo_latitude geo_longitude geo_region_name ip_isp ip_organization
-ip_domain ip_netspeed page_url page_title page_referrer
-page_urlscheme page_urlhost page_urlport page_urlpath page_urlquery
-page_urlfragment refr_urlscheme refr_urlhost refr_urlport refr_urlpath
-refr_urlquery refr_urlfragment refr_medium refr_source refr_term
-mkt_medium mkt_source mkt_term mkt_content mkt_campaign
-se_category se_action se_label se_property se_value
-tr_orderid tr_affiliation tr_total tr_tax tr_shipping
-tr_city tr_state tr_country ti_orderid ti_sku ti_name
-ti_category ti_price ti_quantity pp_xoffset_min pp_xoffset_max
-pp_yoffset_min pp_yoffset_max useragent br_name br_family
-br_version br_type br_renderengine br_lang br_features_pdf
-br_features_flash br_features_java br_features_director
-br_features_quicktime br_features_realplayer br_features_windowsmedia
-br_features_gears br_features_silverlight br_cookies br_colordepth
-br_viewwidth br_viewheight os_name os_family os_manufacturer
-os_timezone dvce_type dvce_ismobile dvce_screenwidth dvce_screenheight
-doc_charset doc_width doc_height tr_currency tr_total_base
-tr_tax_base tr_shipping_base ti_currency ti_price_base base_currency
-geo_timezone mkt_clickid mkt_network etl_tags dvce_sent_tstamp
-refr_domain_userid refr_dvce_tstamp domain_sessionid derived_tstamp
-event_vendor event_name event_format event_version event_fingerprint
-true_tstamp load_tstamp
-```
