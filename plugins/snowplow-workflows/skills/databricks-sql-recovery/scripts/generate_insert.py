@@ -48,8 +48,9 @@ The two column files are raw pastes of:
 whitespace-separated all parse; a `column_name / full_data_type` header row is
 skipped automatically.
 
-The recovery-expr file is the validated Phase-4 expression:
-    ARRAY(NAMED_STRUCT('_schema_version','1-0-0', 'field', CAST(GET_JSON_OBJECT(...) AS T), ...))
+The recovery-expr file is the validated Phase-4 expression, reading the payload from
+`f.data` (the exploded failure element that prep matches on schema):
+    ARRAY(NAMED_STRUCT('_schema_version','1-0-0', 'field', CAST(GET_JSON_OBJECT(f.data,'$.field') AS T), ...))
 WITHOUT a trailing "AS <column>" (the script adds it). Single quotes stay single
 here — this file is read locally and dropped straight into the SELECT, not
 embedded in another string literal, so it needs none of the backslash escaping
@@ -173,21 +174,29 @@ def make_insert(good_columns, failed_col_names, cfg, recovery_expr):
     target_tbl = cfg.get("TARGET_TABLE") or cfg["GOOD_TABLE"]
 
     # Optional source scoping: a schema can fail as both a context entity and the
-    # self-describing event; each is a separate run into its own column.
+    # self-describing event; each is a separate run into its own column. Read source
+    # from the exploded matching element f, so it stays correct when the target entry
+    # isn't the first in the array.
     source_predicate = ""
     if cfg.get("FAILURE_SOURCE"):
         source_predicate = (
-            "      AND GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source') = '%s'\n"
+            "      AND GET_JSON_OBJECT(f.errors[0], '$.source') = '%s'\n"
             % cfg["FAILURE_SOURCE"].replace("'", "\\'")
         )
 
+    # prep EXPLODEs the failure array and keeps the element whose schema matches the one
+    # being recovered (aliased f). One event can fail on several entities at once; reading
+    # [0] would drop events whose target failure isn't first. The target schema appears
+    # once per event, so the explode yields one row per recovered event (no fan-out), and
+    # the recovery expression reads its payload from f.data.
     sql = (
         "INSERT INTO %s.%s.%s\n" % (target_cat, target_sch, target_tbl)
         + "WITH prep AS (\n    SELECT *\n    FROM %s.%s.%s\n"
         % (cfg["FAILED_CATALOG"], cfg["FAILED_SCHEMA"], cfg["FAILED_TABLE"])
+        + "    LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f\n"
         + "    WHERE %s\n" % time_filter(cfg)
         + "      AND app_id = '%s'\n" % app_id_safe
-        + "      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '%s'\n" % schema_safe
+        + "      AND f.schema = '%s'\n" % schema_safe
         + source_predicate
         + ")\n"
         + "SELECT\n    " + ",\n    ".join(select_exprs) + "\nFROM prep;"

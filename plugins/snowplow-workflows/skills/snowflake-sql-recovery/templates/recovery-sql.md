@@ -33,48 +33,62 @@ pre-check) so the identified, validated, and recovered sets match.
 Lead with this: one row per schema × app_id × failure type with volumes and time span. Best for
 surveying what's failing without dumping every row, especially over a wide window.
 
+**Flatten the failure array — one event can fail on several entities at once**, so the
+`contexts_com_snowplowanalytics_snowplow_failure_1` array holds one element per failed entity. Reading
+only `[0]` would hide every schema that isn't an event's *first* failure and silently drop those events
+from the counts. `LATERAL FLATTEN` expands every element, so each failing schema is surfaced wherever
+it sits in the array:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING       AS failing_schema,
+    f.value:schema::STRING       AS failing_schema,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:failure_type::STRING AS failure_type,
-    COUNT(*)                                                                  AS failed_events,
-    MIN(contexts_com_snowplowanalytics_snowplow_failure_1[0]:timestamp::TIMESTAMP) AS first_seen,
-    MAX(contexts_com_snowplowanalytics_snowplow_failure_1[0]:timestamp::TIMESTAMP) AS last_seen
-FROM <failed_database>.<failed_schema>.<failed_table>
+    f.value:failure_type::STRING AS failure_type,
+    COUNT(*)                     AS failed_events,
+    MIN(f.value:timestamp::TIMESTAMP) AS first_seen,
+    MAX(f.value:timestamp::TIMESTAMP) AS last_seen
+FROM <failed_database>.<failed_schema>.<failed_table>,
+     LATERAL FLATTEN(input => contexts_com_snowplowanalytics_snowplow_failure_1) f
 WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'   -- or a bounded range (see Time window)
-  AND contexts_com_snowplowanalytics_snowplow_failure_1 IS NOT NULL
 GROUP BY
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING,
+    f.value:schema::STRING,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:failure_type::STRING
+    f.value:failure_type::STRING
 ORDER BY failed_events DESC;
 ```
+
+Each row is one failing (schema, app_id, failure_type) — an event that failed on two schemas appears
+under both, counted once in each, which is correct. **Recover one schema per run; re-run this
+identification after each** to see what remains.
 
 ## Identification query — row-level drill-in (after a schema is chosen)
 
 Once the user picks a failing schema, inspect *why* it's failing for that schema + app_id. Scoped,
 so it returns a handful of rows, not a flood.
 
+Flatten and match the chosen schema on `f.value:schema`, so events where it isn't the first failure
+element are included:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:failure_type::STRING     AS failure_type,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors[0]:source::STRING AS source,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors                   AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0]:data                     AS data
-FROM <failed_database>.<failed_schema>.<failed_table>
+    f.value:failure_type::STRING     AS failure_type,
+    f.value:errors[0]:source::STRING AS source,
+    f.value:errors                   AS errors,
+    f.value:data                     AS data
+FROM <failed_database>.<failed_schema>.<failed_table>,
+     LATERAL FLATTEN(input => contexts_com_snowplowanalytics_snowplow_failure_1) f
 WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'   -- or a bounded range (see Time window)
-  AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
+  AND f.value:schema::STRING = '<failing_schema_uri>'
   AND app_id = '<app_id>'
 LIMIT 10;
 ```
 
-The **`source`** column (`errors[0]:source` — nested under `errors`, **never** the top-level
-`[0]:source`, which is NULL) tells you whether each row failed as a `contexts` entity or an `unstruct`
-event. A mix means the recovery must be **split into separate runs into different columns** — scope to
-one `source` and handle the other separately (see `reference/failure-context.md`). Carry the same
-`errors[0]:source` predicate through the profiling, test, INSERT, and duplicate-check queries when you
-scope by source.
+The **`source`** column (`f.value:errors[0]:source` — nested under `errors`, **never** the top-level
+`f.value:source`, which is NULL) tells you whether each row failed as a `contexts` entity or an
+`unstruct` event. A mix means the recovery must be **split into separate runs into different columns** —
+scope to one `source` and handle the other separately (see `reference/failure-context.md`). Carry the
+same `errors[0]:source` predicate through the profiling, test, INSERT, and duplicate-check queries when
+you scope by source.
 
 ---
 
@@ -179,10 +193,11 @@ rows, to confirm the whole population is recoverable by one expression. This que
 
 ```sql
 WITH prep AS (
-    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[0]:data AS d
-    FROM <failed_database>.<failed_schema>.<failed_table>
+    SELECT f.value:data AS d
+    FROM <failed_database>.<failed_schema>.<failed_table>,
+         LATERAL FLATTEN(input => contexts_com_snowplowanalytics_snowplow_failure_1) f
     WHERE <load_tstamp window>
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
+      AND f.value:schema::STRING = '<failing_schema_uri>'
       AND app_id = '<app_id>'
 )
 SELECT
@@ -203,7 +218,10 @@ decision table: `reference/column-classification-and-validation.md`.
 
 ## Recovery expression pattern (Phase 4) — build & confirm with the user
 
-The shape depends on the failure **source** (from the drill-in). Cast each field with `::TYPE`.
+The shape depends on the failure **source** (from the drill-in). Cast each field with `::TYPE`. Read
+the payload from **`failure_entry:data`** — the flattened failure element matching the schema being
+recovered (the `prep` CTE in the test SELECT and generator below aliases it as `failure_entry`), not
+`[0]`, so an event whose target failure isn't first is still read from the right element.
 
 **contexts source** — reconstruct as a VARIANT **array of one object**. `_schema_version` is the first
 key (the loader writes it into contexts objects):
@@ -212,8 +230,8 @@ key (the loader writes it into contexts objects):
 ARRAY_CONSTRUCT(
     OBJECT_CONSTRUCT(
         '_schema_version', '1-0-0',                                                    -- corrected version
-        'field1', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:field1::STRING,
-        'field2', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:field2::INTEGER
+        'field1', failure_entry:data:field1::STRING,
+        'field2', failure_entry:data:field2::INTEGER
     )
 )
 ```
@@ -225,8 +243,8 @@ on the Databricks and BigQuery loaders the self-describing event object carries 
 
 ```sql
 OBJECT_CONSTRUCT(
-    'field1', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:field1::STRING,
-    'field2', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:field2::INTEGER
+    'field1', failure_entry:data:field1::STRING,
+    'field2', failure_entry:data:field2::INTEGER
 )
 ```
 
@@ -247,12 +265,13 @@ native scalar, so `TYPEOF(...:data:<field>::STRING)` fails with `Invalid argumen
 
 ```sql
 WITH prep AS (
-    SELECT *
-    FROM <failed_database>.<failed_schema>.<failed_table>
+    SELECT src.*, f.value AS failure_entry
+    FROM <failed_database>.<failed_schema>.<failed_table> src,
+         LATERAL FLATTEN(input => src.contexts_com_snowplowanalytics_snowplow_failure_1) f
     WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
-      -- add for a mixed-source schema: AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors[0]:source::STRING = '<source>'
+      AND f.value:schema::STRING = '<failing_schema_uri>'
+      -- add for a mixed-source schema: AND f.value:errors[0]:source::STRING = '<source>'
 ),
 recovered_rows AS (
     SELECT
@@ -326,12 +345,13 @@ select_clause AS (
 SELECT
     'INSERT INTO <target_database>.<target_schema>.<target_table>\n'
     || 'WITH prep AS (\n'
-    || '    SELECT *\n'
-    || '    FROM <failed_database>.<failed_schema>.<failed_table>\n'
+    || '    SELECT src.*, f.value AS failure_entry\n'
+    || '    FROM <failed_database>.<failed_schema>.<failed_table> src,\n'
+    || '         LATERAL FLATTEN(input => src.contexts_com_snowplowanalytics_snowplow_failure_1) f\n'
     || '    WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL ''<days> DAY''\n'
     || '      AND app_id = ''<app_id>''\n'
-    || '      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = ''<failing_schema_uri>''\n'
-    || '      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:errors[0]:source::STRING = ''<source>''\n'
+    || '      AND f.value:schema::STRING = ''<failing_schema_uri>''\n'
+    || '      AND f.value:errors[0]:source::STRING = ''<source>''\n'
     || ')\n'
     || 'SELECT\n    '
     || columns_sql
@@ -349,6 +369,10 @@ Notes:
   replaced by `''`, because it lives inside a SQL string literal here. `<recovery_column>` is the
   `contexts_*` column for a contexts run or the `unstruct_event_*` column for an unstruct run (whose
   expression is the single `OBJECT_CONSTRUCT(...)`, no `ARRAY_CONSTRUCT`).
+- `prep` **flattens** the failure array and keeps the element whose `schema` matches the one being
+  recovered, aliased `failure_entry`. This recovers events where the target schema isn't the first
+  failure element (reading `[0]` would skip them). The target schema appears once per event, so the
+  flatten yields one row per recovered event — no fan-out.
 - `<source>` scopes `prep` to one failure source — `contexts` or `unstruct`. A schema that failed both
   ways is two separate runs, one per source, each into its own column. Drop this predicate only when the
   drill-in showed a single source.
@@ -429,11 +453,12 @@ SELECT g.event_id AS already_in_good
 FROM <good_database>.<good_schema>.<good_table> g
 WHERE g.load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
   AND g.event_id IN (
-    SELECT event_id
-    FROM <failed_database>.<failed_schema>.<failed_table>
-    WHERE load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
-      AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema::STRING = '<failing_schema_uri>'
+    SELECT src.event_id
+    FROM <failed_database>.<failed_schema>.<failed_table> src,
+         LATERAL FLATTEN(input => src.contexts_com_snowplowanalytics_snowplow_failure_1) f
+    WHERE src.load_tstamp::DATE > CURRENT_DATE - INTERVAL '<days> DAY'
+      AND src.app_id = '<app_id>'
+      AND f.value:schema::STRING = '<failing_schema_uri>'
   );
 ```
 

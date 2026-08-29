@@ -71,14 +71,16 @@ Built to match `data_type` exactly (order: `_schema_version`, `user_id`, `user_n
 
 ```sql
 [STRUCT(
-    '1-0-0'                                                                                            AS _schema_version,
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_id) AS INT64)       AS user_id,          -- string-encoded → coerce
-    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_name)                        AS user_name,        -- native string → strict
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.account_age_days) AS INT64) AS account_age_days -- mixed number,string → coerce
+    '1-0-0'                                                         AS _schema_version,
+    CAST(JSON_VALUE(failure_entry.data.user_id) AS INT64)          AS user_id,          -- string-encoded → coerce
+    STRING(failure_entry.data.user_name)                           AS user_name,        -- native string → strict
+    CAST(JSON_VALUE(failure_entry.data.account_age_days) AS INT64) AS account_age_days  -- mixed number,string → coerce
 )]
 ```
 
-The test SELECT wraps this over the failed rows. Because profiling already proved every value coerces,
+The test SELECT wraps this over the failed rows (its `prep` CTE `UNNEST`s the failure array and keeps
+the element matching the schema, as `failure_entry`, so an event whose target failure isn't first is
+still recovered). Because profiling already proved every value coerces,
 and both `STRING()` and `CAST(JSON_VALUE …)` error on a bad value, a clean run *is* proof here. Output
 spot-check:
 

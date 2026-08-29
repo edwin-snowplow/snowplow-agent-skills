@@ -34,35 +34,49 @@ pre-check) so the identified, validated, and recovered sets match.
 Lead with this: one row per schema × app_id × failure type with volumes and time span. Best for
 surveying what's failing without dumping every row, especially over a wide window.
 
+**Flatten the failure array — one event can fail on several entities at once**, so the
+`contexts_com_snowplowanalytics_snowplow_failure_1` array holds one element per failed entity. Reading
+only `[0]` would hide every schema that isn't an event's *first* failure and silently drop those events
+from the counts. `LATERAL VIEW explode` expands every element, so each failing schema is surfaced
+wherever it sits in the array:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].schema         AS failing_schema,
+    f.schema         AS failing_schema,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type   AS failure_type,
-    COUNT(*)                                                            AS failed_events,
-    MIN(contexts_com_snowplowanalytics_snowplow_failure_1[0].timestamp) AS first_seen,
-    MAX(contexts_com_snowplowanalytics_snowplow_failure_1[0].timestamp) AS last_seen
+    f.failure_type   AS failure_type,
+    COUNT(*)         AS failed_events,
+    MIN(f.timestamp) AS first_seen,
+    MAX(f.timestamp) AS last_seen
 FROM <failed_catalog>.<failed_schema>.<failed_table>
+     LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)  -- or a bounded range (see Time window)
-  AND contexts_com_snowplowanalytics_snowplow_failure_1 IS NOT NULL
 GROUP BY 1, 2, 3
 ORDER BY failed_events DESC;
 ```
+
+Each row is one failing (schema, app_id, failure_type) — an event that failed on two schemas appears
+under both, counted once in each, which is correct. **Recover one schema per run; re-run this
+identification after each** to see what remains.
 
 ## Identification query — row-level drill-in (after a schema is chosen)
 
 Once the user picks a failing schema, inspect *why* it's failing for that schema + app_id. Scoped,
 so it returns a handful of rows, not a flood.
 
+Flatten and match the chosen schema on `f.schema`, so events where it isn't the first failure element
+are included:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].failure_type       AS failure_type,
-    GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].errors[0], '$.source') AS source,  -- errors is ARRAY<STRING> → JSON-extract; contexts vs unstruct, a mix = separate runs (see reference/failure-context.md)
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].errors             AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[0].data               AS data
+    f.failure_type       AS failure_type,
+    GET_JSON_OBJECT(f.errors[0], '$.source') AS source,  -- errors is ARRAY<STRING> → JSON-extract; contexts vs unstruct, a mix = separate runs (see reference/failure-context.md)
+    f.errors             AS errors,
+    f.data               AS data
 FROM <failed_catalog>.<failed_schema>.<failed_table>
+     LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)  -- or a bounded range
-  AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+  AND f.schema = '<failing_schema_uri>'
   AND app_id = '<app_id>'
 LIMIT 10;
 ```
@@ -167,10 +181,11 @@ using that field's **target type** (from the recovery column's `full_data_type`)
 
 ```sql
 WITH prep AS (
-    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[0].data AS d
+    SELECT f.data AS d
     FROM <failed_catalog>.<failed_schema>.<failed_table>
+         LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f
     WHERE <load_tstamp window>
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND f.schema = '<failing_schema_uri>'
       AND app_id = '<app_id>'
 )
 SELECT
@@ -191,7 +206,10 @@ profiling confirmed coercibility. (Full decision table: `reference/strict-typing
 
 The shape depends on the failure **source** (from the drill-in). Field names, types, and order must
 match the recovery column's `full_data_type` exactly — read that type, don't assume. Extract each field
-from the JSON `data` string with `GET_JSON_OBJECT`, then `CAST` to the target type.
+from the JSON `data` string with `GET_JSON_OBJECT`, then `CAST` to the target type. Read the payload
+from **`f.data`** — the exploded failure element matching the schema being recovered (the `prep` CTE in
+the test SELECT, null-count check, and generator below explodes the array and keeps the matching element
+as `f`), not `[0]`, so an event whose target failure isn't first is still read from the right element.
 
 **contexts source** — reconstruct as an **array of one struct**. Here `_schema_version` is the first
 field (the `contexts_*` `full_data_type` lists it):
@@ -199,8 +217,8 @@ field (the `contexts_*` `full_data_type` lists it):
 ```sql
 ARRAY(NAMED_STRUCT(
     '_schema_version', '1-0-0',  -- corrected version
-    'user_id',   CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.user_id')   AS BIGINT),
-    'user_name', CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.user_name') AS STRING)
+    'user_id',   CAST(GET_JSON_OBJECT(f.data, '$.user_id')   AS BIGINT),
+    'user_name', CAST(GET_JSON_OBJECT(f.data, '$.user_name') AS STRING)
 ))
 ```
 
@@ -211,15 +229,14 @@ the type as-is:
 
 ```sql
 NAMED_STRUCT(
-    'nubmers',       CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.nubmers')       AS BIGINT),
-    'true_or_false', CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.true_or_false') AS BOOLEAN),
-    'words',         CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.words')         AS STRING)
+    'nubmers',       CAST(GET_JSON_OBJECT(f.data, '$.nubmers')       AS BIGINT),
+    'true_or_false', CAST(GET_JSON_OBJECT(f.data, '$.true_or_false') AS BOOLEAN),
+    'words',         CAST(GET_JSON_OBJECT(f.data, '$.words')         AS STRING)
 )
 ```
 
-(Whichever source: the failed row's `data` still lives in the failure context, so extraction is the
-same `GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, ...)` — only the
-target column and the wrapper differ.)
+(Whichever source: the failed row's `data` still lives in the matched failure element, so extraction is
+the same `GET_JSON_OBJECT(f.data, ...)` — only the target column and the wrapper differ.)
 
 `STRUCT(CAST(...) AS user_id, ...)` (positional fields with `AS name`) is an equivalent form, but
 `NAMED_STRUCT` makes the field names explicit and is preferred. Do **not** append `AS <column_name>`
@@ -236,9 +253,10 @@ Emit this so the user can prove the reconstructed column is correct before any I
 WITH prep AS (
     SELECT *
     FROM <failed_catalog>.<failed_schema>.<failed_table>
+         LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND f.schema = '<failing_schema_uri>'
 )
 SELECT
     event_id,
@@ -258,16 +276,17 @@ in each reconstructed field. **Expect 0** for every required field.
 
 ```sql
 WITH prep AS (
-    SELECT *
+    SELECT f.data AS d
     FROM <failed_catalog>.<failed_schema>.<failed_table>
+         LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND f.schema = '<failing_schema_uri>'
 )
 SELECT
-    COUNT(*)                                                                                                   AS total_rows,
-    SUM(CASE WHEN CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.user_id')   AS BIGINT) IS NULL THEN 1 ELSE 0 END) AS null_user_id,
-    SUM(CASE WHEN CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.user_name') AS STRING) IS NULL THEN 1 ELSE 0 END) AS null_user_name
+    COUNT(*)                                                                            AS total_rows,
+    SUM(CASE WHEN CAST(GET_JSON_OBJECT(d, '$.user_id')   AS BIGINT) IS NULL THEN 1 ELSE 0 END) AS null_user_id,
+    SUM(CASE WHEN CAST(GET_JSON_OBJECT(d, '$.user_name') AS STRING) IS NULL THEN 1 ELSE 0 END) AS null_user_name
 FROM prep;
 ```
 
@@ -417,9 +436,10 @@ SELECT concat(
     'WITH prep AS (\n',
     '  SELECT *\n',
     '  FROM <failed_catalog>.<failed_schema>.<failed_table>\n',
+    '       LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f\n',
     '  WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)\n',
     '    AND app_id = \'<app_id>\'\n',
-    '    AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = \'<failing_schema_uri>\'\n',
+    '    AND f.schema = \'<failing_schema_uri>\'\n',
     ')\n',
     'SELECT\n    ',
     columns_sql,
@@ -432,6 +452,10 @@ Notes:
 - `<target_*>` is the **staging** table (staging path) or the **good** table (direct path). Column
   classification always comes from the **good** table, so a staging table created with `SELECT * … LIMIT 0`
   lines up positionally.
+- `prep` **explodes** the failure array and keeps the element whose `schema` matches the one being
+  recovered, aliased `f`. This recovers events where the target schema isn't the first failure element
+  (reading `[0]` would skip them); the recovery expression reads its payload from `f.data`. The target
+  schema appears once per event, so the explode yields one row per recovered event — no fan-out.
 - The generated INSERT is **positional** (no explicit column list): the SELECT expressions are
   emitted in good-table `ordinal_position` order, so they land in the right columns. This is why the
   recovery struct's field order should match the target type.
@@ -522,9 +546,10 @@ WHERE DATE(g.load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
   AND g.event_id IN (
     SELECT event_id
     FROM <failed_catalog>.<failed_schema>.<failed_table>
+         LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), <days>)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[0].schema = '<failing_schema_uri>'
+      AND f.schema = '<failing_schema_uri>'
   );
 ```
 

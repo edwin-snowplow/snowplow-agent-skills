@@ -32,35 +32,49 @@ pre-check) so the identified, validated, and recovered sets match.
 Lead with this: one row per schema × app_id × failure type with volumes and time span. Best for
 surveying what's failing without dumping every row, especially over a wide window.
 
+**Flatten the failure array — one event can fail on several entities at once**, so the
+`contexts_com_snowplowanalytics_snowplow_failure_1` array holds one element per failed entity. Reading
+only `[SAFE_OFFSET(0)]` would hide every schema that isn't an event's *first* failure and silently drop
+those events from the counts. `UNNEST` expands every element, so each failing schema is surfaced
+wherever it sits in the array:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema       AS failing_schema,
+    f.schema       AS failing_schema,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].failure_type AS failure_type,
-    COUNT(*)                                                          AS failed_events,
-    MIN(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].timestamp) AS first_seen,
-    MAX(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].timestamp) AS last_seen
-FROM `<failed_project>.<failed_dataset>.<failed_table>`
+    f.failure_type AS failure_type,
+    COUNT(*)       AS failed_events,
+    MIN(f.timestamp) AS first_seen,
+    MAX(f.timestamp) AS last_seen
+FROM `<failed_project>.<failed_dataset>.<failed_table>`,
+     UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)  -- or a bounded range (see Time window)
-  AND contexts_com_snowplowanalytics_snowplow_failure_1 IS NOT NULL
 GROUP BY 1, 2, 3
 ORDER BY failed_events DESC;
 ```
+
+Each row is one failing (schema, app_id, failure_type) — an event that failed on two schemas appears
+under both, counted once in each, which is correct. **Recover one schema per run; re-run this
+identification after each** to see what remains.
 
 ## Identification query — row-level drill-in (after a schema is chosen)
 
 Once the user picks a failing schema, inspect *why* it's failing for that schema + app_id. Scoped,
 so it returns a handful of rows, not a flood.
 
+Flatten and match the chosen schema on `f.schema`, so events where it isn't the first failure element
+are included:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].failure_type              AS failure_type,
-    JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors[SAFE_OFFSET(0)].source) AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
-    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors                    AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data                      AS data
-FROM `<failed_project>.<failed_dataset>.<failed_table>`
+    f.failure_type              AS failure_type,
+    JSON_VALUE(f.errors[SAFE_OFFSET(0)].source) AS source,  -- contexts vs unstruct; a mix = separate runs (see reference/failure-context.md)
+    f.errors                    AS errors,
+    f.data                      AS data
+FROM `<failed_project>.<failed_dataset>.<failed_table>`,
+     UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f
 WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)  -- or a bounded range
-  AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
+  AND f.schema = '<failing_schema_uri>'
   AND app_id = '<app_id>'
 LIMIT 10;
 ```
@@ -168,11 +182,12 @@ tolerate any input), so it's always safe to suggest. Add one block per field, us
 
 ```sql
 WITH prep AS (
-    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data AS d
-    FROM `<failed_project>.<failed_dataset>.<failed_table>`
+    SELECT f.data AS d
+    FROM `<failed_project>.<failed_dataset>.<failed_table>`,
+         UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
+      AND f.schema = '<failing_schema_uri>'
 )
 SELECT
     COUNT(*)                                                                            AS total_rows,
@@ -211,16 +226,19 @@ which guarantees the test SELECT below runs clean.
 The shape depends on the failure **source** (from the drill-in). Field names, types, and order must
 match the recovery column's `data_type` exactly — read that type, don't assume. Extract **each field
 with the extractor the profiling step selected for it** — strict where the value is already the native
-JSON type, `CAST(JSON_VALUE(...) AS <TYPE>)` where it's string-encoded or mixed.
+JSON type, `CAST(JSON_VALUE(...) AS <TYPE>)` where it's string-encoded or mixed. Read the payload from
+**`failure_entry.data`** — the `UNNEST`ed failure element matching the schema being recovered (the
+`prep` CTE in the test SELECT and generator below exposes it as `failure_entry`), not `[SAFE_OFFSET(0)]`,
+so an event whose target failure isn't first is still read from the right element.
 
 **contexts source** — reconstruct as an **array of one struct**. `_schema_version` is the first field
 (the `contexts_*` `data_type` lists it):
 
 ```sql
 [STRUCT(
-    '1-0-0'                                                                                       AS _schema_version,  -- corrected version
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_id) AS INT64)  AS user_id,     -- profiled as string/mixed → coerce
-    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_name)                   AS user_name    -- profiled as native string → strict
+    '1-0-0'                                                    AS _schema_version,  -- corrected version
+    CAST(JSON_VALUE(failure_entry.data.user_id) AS INT64)      AS user_id,     -- profiled as string/mixed → coerce
+    STRING(failure_entry.data.user_name)                       AS user_name    -- profiled as native string → strict
 )]
 ```
 
@@ -230,8 +248,8 @@ field — omit it unless the type lists it. Same per-field extractors:
 
 ```sql
 STRUCT(
-    CAST(JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_id) AS INT64) AS user_id,
-    STRING(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].data.user_name)                  AS user_name
+    CAST(JSON_VALUE(failure_entry.data.user_id) AS INT64) AS user_id,
+    STRING(failure_entry.data.user_name)                  AS user_name
 )
 ```
 
@@ -254,11 +272,12 @@ Emit this so the user can prove the reconstructed column is correct before any I
 
 ```sql
 WITH prep AS (
-    SELECT *
-    FROM `<failed_project>.<failed_dataset>.<failed_table>`
+    SELECT src.*, failure_entry
+    FROM `<failed_project>.<failed_dataset>.<failed_table>` src,
+         UNNEST(src.contexts_com_snowplowanalytics_snowplow_failure_1) AS failure_entry
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
+      AND failure_entry.schema = '<failing_schema_uri>'
 )
 SELECT
     event_id,
@@ -321,12 +340,13 @@ select_clause AS (
 )
 SELECT FORMAT("""INSERT INTO `<target_project>.<target_dataset>.<target_table>`
 WITH prep AS (
-  SELECT *
-  FROM `<failed_project>.<failed_dataset>.<failed_table>`
+  SELECT src.*, failure_entry
+  FROM `<failed_project>.<failed_dataset>.<failed_table>` src,
+       UNNEST(src.contexts_com_snowplowanalytics_snowplow_failure_1) AS failure_entry
   WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
     AND app_id = '<app_id>'
-    AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
-    AND JSON_VALUE(contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].errors[SAFE_OFFSET(0)].source) = '<source>'
+    AND failure_entry.schema = '<failing_schema_uri>'
+    AND JSON_VALUE(failure_entry.errors[SAFE_OFFSET(0)].source) = '<source>'
 )
 SELECT
     %s
@@ -344,6 +364,10 @@ Notes:
 - `<recovery_expression>` is the validated Phase-4 expression, inserted verbatim inside the double
   quotes; `<recovery_column>` is the entity column — the `contexts_*` column for a contexts run or the
   `unstruct_event_*` column for an unstruct run.
+- `prep` **flattens** the failure array (`UNNEST`) and keeps the element whose `schema` matches the one
+  being recovered, exposed as `failure_entry`. This recovers events where the target schema isn't the
+  first failure element (reading `[SAFE_OFFSET(0)]` would skip them). The target schema appears once per
+  event, so the flatten yields one row per recovered event — no fan-out.
 - `<source>` scopes `prep` to one failure source — `contexts` or `unstruct`. A schema that failed both
   ways is two separate runs, one per source, each into its own column. If the drill-in showed a single
   source you can drop this predicate, but keeping it is harmless.
@@ -426,10 +450,11 @@ FROM `<good_project>.<good_dataset>.<good_table>` g
 WHERE DATE(g.load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
   AND g.event_id IN (
     SELECT event_id
-    FROM `<failed_project>.<failed_dataset>.<failed_table>`
+    FROM `<failed_project>.<failed_dataset>.<failed_table>`,
+         UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f
     WHERE DATE(load_tstamp) > DATE_SUB(CURRENT_DATE(), INTERVAL <days> DAY)
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[SAFE_OFFSET(0)].schema = '<failing_schema_uri>'
+      AND f.schema = '<failing_schema_uri>'
   );
 ```
 

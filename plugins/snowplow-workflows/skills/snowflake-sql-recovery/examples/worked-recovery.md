@@ -67,14 +67,16 @@ Built as a VARIANT array of one object, `_schema_version` first, each field cast
 ARRAY_CONSTRUCT(
     OBJECT_CONSTRUCT(
         '_schema_version', '1-0-0',
-        'user_id', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:user_id::INTEGER,
-        'user_name', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:user_name::STRING,
-        'account_age_days', contexts_com_snowplowanalytics_snowplow_failure_1[0]:data:account_age_days::INTEGER
+        'user_id', failure_entry:data:user_id::INTEGER,
+        'user_name', failure_entry:data:user_name::STRING,
+        'account_age_days', failure_entry:data:account_age_days::INTEGER
     )
 )
 ```
 
-The test SELECT builds `recovered` in a CTE, then reads its fields back with
+The test SELECT's `prep` CTE `LATERAL FLATTEN`s the failure array and keeps the element matching the
+schema, as `failure_entry`, so an event whose target failure isn't first is still recovered. It builds
+`recovered` in a CTE, then reads its fields back with
 `TYPEOF(recovered[0]:<field>)` in the outer query — `TYPEOF()` needs a VARIANT, so it can't wrap the
 `::TYPE` casts directly. Because profiling already proved every value coerces, and Snowflake errors on
 a bad `::TYPE` cast, a clean run *is* proof here. Output spot-check:

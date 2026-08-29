@@ -37,38 +37,52 @@ either form (`LOAD_TSTAMP_START`/`LOAD_TSTAMP_END`, or `DAYS_LOOKBACK`).
 Lead with this: one row per schema × app_id × failure type with volumes and time span. Best for
 surveying what's failing without dumping every row, especially over a wide window.
 
+**Flatten the failure array — one event can fail on several entities at once**, so the
+`contexts_com_snowplowanalytics_snowplow_failure_1` array holds one element per failed entity. Reading
+only `[1]` would hide every schema that isn't an event's *first* failure and silently drop those events
+from the counts. `CROSS JOIN UNNEST` expands every element, so each failing schema is surfaced wherever
+it sits in the array:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].schema         AS failing_schema,
+    failure_ctx.schema         AS failing_schema,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].failure_type   AS failure_type,
-    COUNT(*)                                                            AS failed_events,
-    MIN(contexts_com_snowplowanalytics_snowplow_failure_1[1].timestamp) AS first_seen,
-    MAX(contexts_com_snowplowanalytics_snowplow_failure_1[1].timestamp) AS last_seen
+    failure_ctx.failure_type   AS failure_type,
+    COUNT(*)                   AS failed_events,
+    MIN(failure_ctx.timestamp) AS first_seen,
+    MAX(failure_ctx.timestamp) AS last_seen
 FROM <failed_database>.<failed_table>
+CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)
 WHERE load_tstamp > current_timestamp - interval '<days>' day   -- or a bounded range (see Time window)
-  AND contexts_com_snowplowanalytics_snowplow_failure_1 IS NOT NULL
 GROUP BY
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].schema,
+    failure_ctx.schema,
     app_id,
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].failure_type
+    failure_ctx.failure_type
 ORDER BY failed_events DESC
 ```
+
+Each row is one failing (schema, app_id, failure_type) — an event that failed on two schemas appears
+under both, counted once in each, which is correct. **Recover one schema per run; re-run this
+identification after each** to see what remains.
 
 ## Identification query — row-level drill-in (after a schema is chosen)
 
 Once the user picks a failing schema, inspect *why* it's failing for that schema + app_id. Scoped,
 so it returns a handful of rows, not a flood.
 
+Flatten and match the chosen schema on `failure_ctx.schema`, so events where it isn't the first failure
+element are included:
+
 ```sql
 SELECT
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].failure_type       AS failure_type,
-    json_extract_scalar(contexts_com_snowplowanalytics_snowplow_failure_1[1].errors[1], '$.source') AS source,  -- errors is array(varchar) JSON strings → JSON-extract; contexts vs unstruct, a mix = separate runs (see reference/failure-context.md)
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].errors             AS errors,
-    contexts_com_snowplowanalytics_snowplow_failure_1[1].data               AS data
+    failure_ctx.failure_type       AS failure_type,
+    json_extract_scalar(failure_ctx.errors[1], '$.source') AS source,  -- errors is array(varchar) JSON strings → JSON-extract; contexts vs unstruct, a mix = separate runs (see reference/failure-context.md)
+    failure_ctx.errors             AS errors,
+    failure_ctx.data               AS data
 FROM <failed_database>.<failed_table>
+CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)
 WHERE load_tstamp > current_timestamp - interval '<days>' day   -- or a bounded range (see Time window)
-  AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
+  AND failure_ctx.schema = '<failing_schema_uri>'
   AND app_id = '<app_id>'
 LIMIT 10
 ```
@@ -90,7 +104,7 @@ SELECT
 FROM <failed_database>.<failed_table>
 CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)
 WHERE load_tstamp > current_timestamp - interval '<days>' day
-  AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
+  AND failure_ctx.schema = '<failing_schema_uri>'
 LIMIT 10
 ```
 
@@ -101,15 +115,16 @@ LIMIT 10
 Before writing any recovery expression, profile **every field you'll recover** across **all** failed
 rows, to confirm the whole population is recoverable by one expression. This query can't error
 (`json_extract_scalar`, `TRY_CAST`, `count_if`). `<failure_data>` is the payload JSON string,
-`contexts_com_snowplowanalytics_snowplow_failure_1[1].data`. Add one block per field, using that
+`failure_ctx.data` from the flattened matching element. Add one block per field, using that
 field's **target type** (from the good-table `DESCRIBE`) in the `TRY_CAST`:
 
 ```sql
 WITH prep AS (
-    SELECT contexts_com_snowplowanalytics_snowplow_failure_1[1].data AS d
+    SELECT failure_ctx.data AS d
     FROM <failed_database>.<failed_table>
+    CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)
     WHERE <load_tstamp window>
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
+      AND failure_ctx.schema = '<failing_schema_uri>'
       AND app_id = '<app_id>'
 )
 SELECT
@@ -180,7 +195,9 @@ WITH prep AS (
     FROM <failed_database>.<failed_table>
     WHERE load_tstamp > current_timestamp - interval '<days>' day
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
+      -- keep events that failed on this schema at ANY array position (not just [1]); the UNNEST below
+      -- then picks the matching element. any_match prunes the scan without dropping index-1+ events.
+      AND any_match(contexts_com_snowplowanalytics_snowplow_failure_1, x -> x.schema = '<failing_schema_uri>')
 ),
 unnested AS (
     SELECT prep.*, failure_ctx.data AS failure_data
@@ -222,8 +239,8 @@ WITH prep AS (
     FROM <failed_database>.<failed_table>
     WHERE load_tstamp > current_timestamp - interval '<days>' day
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema
-          = '<failing_schema_uri>'
+      AND any_match(contexts_com_snowplowanalytics_snowplow_failure_1,
+                    x -> x.schema = '<failing_schema_uri>')
 ),
 unnested AS (
     SELECT
@@ -338,7 +355,8 @@ WHERE g.load_tstamp > current_timestamp - interval '<days>' day
     FROM <failed_database>.<failed_table>
     WHERE load_tstamp > current_timestamp - interval '<days>' day
       AND app_id = '<app_id>'
-      AND contexts_com_snowplowanalytics_snowplow_failure_1[1].schema = '<failing_schema_uri>'
+      AND any_match(contexts_com_snowplowanalytics_snowplow_failure_1,
+                    x -> x.schema = '<failing_schema_uri>')
   );
 ```
 

@@ -73,13 +73,15 @@ Built to match `full_data_type` exactly (order: `_schema_version`, `user_id`, `u
 ```sql
 ARRAY(NAMED_STRUCT(
     '_schema_version', '1-0-0',
-    'user_id',          CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.user_id')          AS BIGINT),
-    'user_name',        CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.user_name')        AS STRING),
-    'account_age_days', CAST(GET_JSON_OBJECT(contexts_com_snowplowanalytics_snowplow_failure_1[0].data, '$.account_age_days') AS BIGINT)
+    'user_id',          CAST(GET_JSON_OBJECT(f.data, '$.user_id')          AS BIGINT),
+    'user_name',        CAST(GET_JSON_OBJECT(f.data, '$.user_name')        AS STRING),
+    'account_age_days', CAST(GET_JSON_OBJECT(f.data, '$.account_age_days') AS BIGINT)
 ))
 ```
 
-The test SELECT wraps this over the failed rows. Because a clean run is **not** proof in Databricks,
+The test SELECT wraps this over the failed rows (its `prep` CTE `LATERAL VIEW explode`s the failure
+array and keeps the element matching the schema, as `f`, so an event whose target failure isn't first
+is still recovered). Because a clean run is **not** proof in Databricks,
 we inspect the values and run the per-field null-count check (all required fields return 0). Output
 spot-check:
 

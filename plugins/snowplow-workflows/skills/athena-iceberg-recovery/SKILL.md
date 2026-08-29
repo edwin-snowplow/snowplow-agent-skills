@@ -116,7 +116,12 @@ never re-ask.
 
 ### Phase 2 — Identify the failures
 Lead with the **summary identification query**; read off which schemas fail, at what volume, which
-`failure_type`, which app_ids. Have the user pick **one** schema; run the **row-level drill-in** to
+`failure_type`, which app_ids. **One event can fail on several entities at once**, so the failure column
+is an array with one element per failed entity. The identification query **flattens** it (via `CROSS
+JOIN UNNEST`) so a schema is surfaced wherever it sits in the array — reading only `[1]` would hide, and
+silently drop from the counts, every schema that isn't an event's first failure. Recover **one schema
+per run** and re-run identification after each to see what remains. Have the user pick **one** schema;
+run the **row-level drill-in** to
 form a fix hypothesis — including whether it's a schema **resolution** failure rather than a validation
 one (see "Recovering a ResolutionError" below). The drill-in also surfaces **`source`** — read it from
 the nested `errors[…].source` path (never the top-level `source`, which doesn't exist): a mix of
