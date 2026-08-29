@@ -112,11 +112,17 @@ If they want it, give the **duplicate pre-check** query (`templates/recovery-sql
 narrow scope, or proceed knowingly). If they skip, note it and move on.
 
 Then, if the failing schema is a **custom schema** (your own vendor, not a Snowplow / Iglu Central
-one), **ask the user to paste the Iglu JSON schema** for it (or its registry URL). Not strictly
-required — the recovery column's `data_type` and Phase 3.5 profiling ground the recovery, and this
-replaces none of them — but it's authoritative context the user can reasonably provide, letting you
-sanity-check field names/types/`required`/enums, catch a renamed field, and tell a genuinely-bad value
-from a wrong target type. Extra confidence, not a substitute. (Iglu Central schemas you can read directly.)
+one), get its Iglu JSON — **fetch before asking**. Try in order: the Console MCP if the official
+`snowplow` plugin is installed (`.snowplow/agent-context.md`'s `mcp-available` records this); else
+`snowplow-cli data-structures` with Console credentials; else a plain HTTP fetch of a public registry
+or a registry URL the user gives. Only **ask the user to paste** the schema when it lives in a private
+authed registry you can't reach. (`design-tracking-plan` follows the same MCP-then-CLI order.) Not
+strictly required — the recovery column's `data_type` and Phase 3.5 profiling ground the recovery, and
+this replaces none of them — but it's authoritative context, letting you sanity-check
+field names/types/`required`/enums, catch a renamed field, and tell a genuinely-bad value from a wrong
+target type. It helps most in the ResolutionError flow, where listing the registry finds the correct
+schema URI the user often can't recall. Extra confidence, not a substitute. (Iglu Central schemas you
+can read directly.)
 
 ### Phase 3 — Inspect the payload
 Run the **payload inspection query** (`JSON_VALUE`) so the user sees the real value behind each field.
