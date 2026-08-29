@@ -72,6 +72,13 @@ Carry one **time window** through every query so the identified, validated, and 
 (see "Time window" in `templates/recovery-sql.md`).
 
 ### Phase 1 — Gather tables, offer to help identify
+First, read `.snowplow/agent-context.md` if the project has one (written by `setup-snowplow-context`).
+Its `warehouse` key is the fact that routes between these four sibling skills — it should read
+`bigquery` here; if it says anything else, flag the mismatch and point the user at the matching
+recovery skill instead of continuing. The file doesn't record table names, so you still ask for those
+below, but confirm the warehouse rather than re-establishing it. If the file is absent, offer once to
+run `setup-snowplow-context` (it removes this question for every later skill too), then continue.
+
 Ask for both tables up front (BigQuery `PROJECT.DATASET.TABLE`, all three parts each) and when the
 failures happened, in the opening message, so no placeholders linger:
 
