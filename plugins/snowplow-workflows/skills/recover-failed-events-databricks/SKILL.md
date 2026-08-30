@@ -1,5 +1,5 @@
 ---
-name: databricks-sql-recovery
+name: recover-failed-events-databricks
 description: Recover Snowplow failed events from a Databricks failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in Databricks / Delta Lake, especially events that failed on a single custom entity/context. Assembles the wide INSERT from INFORMATION_SCHEMA column metadata (via a bundled local script) and reconstructs entities as native ARRAY-of-STRUCT columns via ARRAY(NAMED_STRUCT(...)), matching the target column field names, types, and order exactly (read from ground truth, never guessed). Handles Databricks specifics — GET_JSON_OBJECT string extraction, CAST typing, and ANSI-mode-dependent cast behaviour. Triggers: recover failed events in Databricks, reprocess Databricks bad rows, reinsert Databricks schema-validation failures, recover failed events into the Databricks atomic events table, Databricks Delta failed event recovery, recover Databricks failed events with SQL.
 ---
 

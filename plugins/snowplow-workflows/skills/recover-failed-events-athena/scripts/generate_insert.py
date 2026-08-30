@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate the recovery INSERT statement for the athena-iceberg-recovery skill.
+Generate the recovery INSERT statement for the recover-failed-events-athena skill.
 
 Non-interactive. Reads its inputs from files and prints the INSERT to stdout
 (or writes it with --out). Standard library only — runs on any local Python 3.6+.

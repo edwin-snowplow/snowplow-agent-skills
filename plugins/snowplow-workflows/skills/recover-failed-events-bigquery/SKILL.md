@@ -1,5 +1,5 @@
 ---
-name: bigquery-sql-recovery
+name: recover-failed-events-bigquery
 description: Recover Snowplow failed events from a BigQuery failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in BigQuery, especially events that failed on a single custom entity/context. Builds the wide INSERT itself with an INFORMATION_SCHEMA metadata query and reconstructs entities as native ARRAY-of-STRUCT columns, matching the target column's field names, types, and order exactly (read from ground truth, never guessed). Triggers: recover failed events in BigQuery, reprocess BigQuery bad rows, reinsert BigQuery schema-validation failures, recover failed events into the BigQuery atomic events table, BigQuery failed event recovery, recover BigQuery failed events with SQL.
 ---
 

@@ -1,5 +1,5 @@
 ---
-name: snowflake-sql-recovery
+name: recover-failed-events-snowflake
 description: Recover Snowplow failed events from a Snowflake failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in Snowflake, especially events that failed on a single custom entity/context. Builds the wide INSERT itself with a metadata query over INFORMATION_SCHEMA and reconstructs entities as semi-structured ARRAY/VARIANT with per-field TYPE casts (no strict struct typing, no reserved-word quoting, read from ground truth, never guessed). Triggers: recover failed events in Snowflake, reprocess Snowflake bad rows, reinsert Snowflake schema-validation failures, recover failed events into the Snowflake atomic events table, Snowflake failed event recovery, recover Snowflake failed events with SQL.
 ---
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate the recovery INSERT statement for the databricks-sql-recovery skill.
+Generate the recovery INSERT statement for the recover-failed-events-databricks skill.
 
 Why this exists: the in-warehouse generator builds the whole INSERT as one
 string literal inside a generator query, so every single quote in the payload
@@ -8,7 +8,7 @@ has to be backslash-escaped (\'). Spark has no '' escape -- a doubled quote
 coalesces into nothing and the quote silently vanishes, producing an
 unparseable INSERT with no error. This script assembles the INSERT locally in
 Python and writes the bytes directly, so there is no SQL string-literal layer
-to escape. Mirrors the athena-iceberg-recovery script.
+to escape. Mirrors the recover-failed-events-athena script.
 
 Non-interactive. Reads its inputs from files and prints the INSERT to stdout
 (or writes it with --out). Standard library only — runs on any local Python 3.6+.

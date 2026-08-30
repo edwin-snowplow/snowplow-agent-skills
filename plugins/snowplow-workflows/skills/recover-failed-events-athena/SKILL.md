@@ -1,5 +1,5 @@
 ---
-name: athena-iceberg-recovery
+name: recover-failed-events-athena
 description: Recover Snowplow failed events from an Athena Iceberg / Glue failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in Athena, especially events that failed on a single custom entity/context. Handles atomic vs custom columns, Hive to Athena type conversion, and reserved-word quoting, and builds the wide INSERT deterministically with a bundled Python generator. Triggers: recover failed events in Athena, reprocess Athena bad rows, reinsert Iceberg schema-validation failures, recover failed events into the Athena atomic events table, Athena Iceberg failed event recovery, recover Glue failed events with SQL.
 ---
 
