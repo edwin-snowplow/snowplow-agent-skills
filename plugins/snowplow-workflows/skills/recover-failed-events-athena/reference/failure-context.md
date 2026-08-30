@@ -81,8 +81,12 @@ profiling query, where NULL is the signal you're counting).
 To read the payload field-by-field, expand the failure array with `UNNEST`:
 `FROM <table> CROSS JOIN UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS t(failure_ctx)`,
 then read `failure_ctx.data`, `failure_ctx.schema`, etc. This is what the payload-inspection query and
-the test SELECT / INSERT `unnested` CTE do so each field renders on its own. For **filtering** the
-failed rows (WHERE predicates), direct `[1]` indexing on `...schema` is simpler.
+the test SELECT / INSERT `unnested` CTE do so each field renders on its own. **One event can fail on
+several entities at once**, so every query matches the target schema on the unnested element
+(`failure_ctx.schema`), and the recovery reads its payload from `failure_ctx.data`. Do **not** filter on
+`...failure_1[1].schema`: an event whose target failure isn't the first array element would be missed.
+The INSERT prep prunes the scan with `any_match(contexts_..._failure_1, x -> x.schema = '<uri>')`, which
+keeps those index-1+ events.
 
 ## Grounding the target shape (never guess it) — the good-table DESCRIBE
 

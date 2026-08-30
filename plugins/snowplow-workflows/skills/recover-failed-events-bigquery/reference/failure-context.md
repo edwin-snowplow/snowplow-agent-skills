@@ -85,8 +85,11 @@ incomplete recovery.
 To expand a multi-element failure array (or to read `errors` row-by-row), use `UNNEST`:
 `FROM <table>, UNNEST(contexts_com_snowplowanalytics_snowplow_failure_1) AS f`, then read `f.data`,
 `f.errors`, `f.schema`, etc. This is what the payload-inspection query does so each field renders on
-its own. For **reconstructing** the entity, direct `[SAFE_OFFSET(0)]` indexing is simpler and is what
-the recovery expression uses.
+its own. **One event can fail on several entities at once**, so every query flattens and matches the
+target schema on the unnested element (`f.schema`), not `[SAFE_OFFSET(0)]` — an event whose target
+failure isn't the first array element would be missed. The recovery expression reads its payload from
+the matched element (`failure_entry.data`), which the test SELECT and generator `prep` expose via
+`UNNEST`.
 
 ## Grounding the target shape (never guess it)
 

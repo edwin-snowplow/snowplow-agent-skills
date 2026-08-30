@@ -101,8 +101,10 @@ columns.
 To expand a multi-element failure array (or to read `errors` row-by-row), use
 `LATERAL VIEW explode(contexts_com_snowplowanalytics_snowplow_failure_1) t AS f`, then read `f.data`,
 `f.errors`, `f.schema`, etc. This is what the payload-inspection query does so each field renders on
-its own. For **reconstructing** the entity, direct `[0]` indexing is simpler and is what the recovery
-expression uses.
+its own. **One event can fail on several entities at once**, so every query explodes and matches the
+target schema on the exploded element (`f.schema`), not `[0]` — an event whose target failure isn't the
+first array element would be missed. The recovery expression reads its payload from the matched element
+(`f.data`), which the test SELECT and generator `prep` expose via `LATERAL VIEW explode`.
 
 ## Grounding the target shape (never guess it)
 

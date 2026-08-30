@@ -77,8 +77,11 @@ in the non-erroring profiling query.
 To expand a multi-element failure array (or to read `errors` row-by-row), use `LATERAL FLATTEN`:
 `FROM <table>, LATERAL FLATTEN(input => contexts_com_snowplowanalytics_snowplow_failure_1) f`, then
 read `f.value:data`, `f.value:errors`, `f.value:schema`, etc. This is what the payload-inspection
-query does so each field renders on its own. For **reconstructing** the entity, direct `[0]` indexing
-is simpler and is what the recovery expression uses.
+query does so each field renders on its own. **One event can fail on several entities at once**, so
+every query flattens and matches the target schema on the flattened element (`f.value:schema`), not
+`[0]` — an event whose target failure isn't the first array element would be missed. The recovery
+expression reads its payload from the matched element (`failure_entry:data`), which the test SELECT and
+generator `prep` expose via `LATERAL FLATTEN`.
 
 ## Grounding the target shape (never guess it)
 
