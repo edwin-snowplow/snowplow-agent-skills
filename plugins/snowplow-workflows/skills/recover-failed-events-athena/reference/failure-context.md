@@ -99,11 +99,29 @@ ground truth, in this order of preference:
    and its full struct type (field names, types, order). This is the authoritative contract the
    recovery expression's `ARRAY(ROW(...))` must match after Hive→Athena type conversion. Usually
    enough on its own.
-2. A validated good-table row for the same entity (`SELECT <recovery_column>[1] ...`) — a cross-check.
-3. The **Iglu schema JSON** itself — the fallback when the entity isn't in the good-table `DESCRIBE`
-   yet (a brand-new schema with no validated events) and the type is ambiguous. Ask the user for it or
-   its URL and read the field types and `required` list from there.
+2. A validated good-table row for the same entity (`SELECT <recovery_column>[1] ...`) — **always
+   query one**. Not an optional cross-check: it is what catches a column type you
+   misread, and whether an unstruct column carries `_schema_version` is a question you answer by
+   looking, not by defaulting.
 
 Do not infer types from the failed payload alone. See
 `reference/column-classification-and-validation.md` for why the reconstructed struct must match the
 good-table type *exactly*, and `templates/recovery-sql.md` for the queries.
+
+
+### No validated events in the good table → stop, don't recover
+
+If the good table holds **no validated events for this entity** — the recovery column is absent, or it
+exists but every row is NULL — **do not build a recovery.** Say so plainly and stop.
+
+The reason is the loader, not the SQL. Inserting into a column the loader has never populated means
+*you* are establishing that column's shape: adding the column outright, or fixing a struct contract the
+loader hasn't set yet. If that differs from what the loader later creates — a field order, a type width,
+a nullable flag — the loader can fail on its next write, turning a failed-events problem into a broken
+pipeline.
+
+Tell the user to send one valid event of this schema through the pipeline first and let the loader
+create and populate the column, then re-run the recovery. The failed events aren't going anywhere.
+
+Widen the lookback before concluding the table is empty — a validated example may simply predate the
+default window. "Zero rows in the last 7 days" is not "no validated events".

@@ -183,9 +183,13 @@ value:
    exact `column_name` and its `full_data_type` (which names every struct field, type, and order).
    Don't write any query that references the recovery column until you have this — no guessing it from
    the Iglu URI.
-2. If the `full_data_type` plus the Phase-3.5 profiling leaves the shape ambiguous, then emit the
-   "Inspect a validated event" query (written with that **real** column name) or ask for the Iglu
-   schema JSON.
+2. Then emit the "Inspect a validated event" query (written with that **real** column name) and read the
+   shape off a real good row — **every time, not only when the `full_data_type` looks ambiguous.** It
+   catches a type you misread, and whether the unstruct column carries `_schema_version` is settled by
+   looking, not by defaulting. **If it returns no rows, widen the lookback; if the good table genuinely holds no validated
+   events for this entity, do not recover** — recovering would make you, not the loader, establish the
+   column's shape, and the loader can then fail on its next write. Tell the user to land one valid event
+   first, then re-run (`reference/failure-context.md`).
 
 Only now build the recovery expression to match `full_data_type` field-for-field, with each field
 `CAST(GET_JSON_OBJECT(...) AS <type>)` (`reference/failure-context.md`). The shape depends on the
@@ -194,7 +198,7 @@ Phase-2 **source**:
   `full_data_type` lists it).
 - **unstruct** → a single `NAMED_STRUCT(...)` with **no outer `ARRAY()`**, into the `unstruct_event_*`
   column. Its `full_data_type` usually has **no `_schema_version`** field — omit it unless the type
-  lists it. Do not carry over the contexts "`_schema_version` first, mandatory" rule; match the actual
+  *and* the validated good row show it (confirm, don't assume). Do not carry over the contexts "`_schema_version` first, mandatory" rule; match the actual
   type. (See the two forms in `templates/recovery-sql.md`.)
 
 Emit the **test SELECT** (event_id + reconstructed column). **Do not generate the INSERT yet** — have

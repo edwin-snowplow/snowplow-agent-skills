@@ -89,13 +89,31 @@ The values you extract come from this failed payload, but the **types and field 
 into are not defined by the payload** — the payload is exactly what failed validation. They are
 defined by the Iglu schema. Resolve the intended shape from ground truth, in this order of preference:
 
-1. A validated good-table row for the same entity (the "Inspect a validated event" query) — the
-   `TYPEOF()` of each field on a known-good row is the target type your `::TYPE` casts must produce.
-   This is the fastest path and usually enough.
-2. The Iglu schema JSON itself — the fallback when no validated events exist yet (brand-new schema).
-   Read the field types and `required` list directly from it. Ask the user for it or its URL.
+1. A validated good-table row for the same entity (the "Inspect a validated event" query) — **always
+   query one; on Snowflake it is the only grounding there is.** Entity columns are VARIANT, so there is
+   no DDL type to read: the `TYPEOF()` of each field on a known-good row *is* the target type your
+   `::TYPE` casts must produce, and a good row is the only thing that tells you whether an unstruct
+   value carries `_schema_version`. Never assume that shape.
 
 The recovery column's **name** (not its full shape — Snowflake entity columns are semi-structured VARIANT)
 still comes from a query: the "Finding the recovery column name" lookup. See
 `reference/column-classification-and-validation.md` for how the generator uses that name to classify
 columns, and `templates/recovery-sql.md` for the queries.
+
+
+### No validated events in the good table → stop, don't recover
+
+If the good table holds **no validated events for this entity** — the recovery column is absent, or it
+exists but every row is NULL — **do not build a recovery.** Say so plainly and stop.
+
+The reason is the loader, not the SQL. Inserting into a column the loader has never populated means
+*you* are establishing that column's shape: adding the column outright, or fixing a struct contract the
+loader hasn't set yet. If that differs from what the loader later creates — a field order, a type width,
+a nullable flag — the loader can fail on its next write, turning a failed-events problem into a broken
+pipeline.
+
+Tell the user to send one valid event of this schema through the pipeline first and let the loader
+create and populate the column, then re-run the recovery. The failed events aren't going anywhere.
+
+Widen the lookback before concluding the table is empty — a validated example may simply predate the
+default window. "Zero rows in the last 7 days" is not "no validated events".

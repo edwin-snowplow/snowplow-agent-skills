@@ -181,16 +181,23 @@ Do these **in order, one step at a time** — never build the expression from a 
 field type:
 1. Ask the user to paste the **good-table `DESCRIBE`** (`DESCRIBE <good_database>.<good_table>` —
    don't re-ask for the name). From it, read the exact recovery column and its `ROW(...)` field names,
-   types, and **order**. If the entity isn't in the DESCRIBE yet (brand-new schema), fall back to the
-   Iglu schema JSON.
-2. Only now build the **recovery expression**, mapping each `json_extract_scalar(failure_data, '$.field')`
+   types, and **order**. If the entity isn't in the `DESCRIBE` at all, **stop** — see step 2.
+2. Then emit the **"Inspect a validated event"** query (`templates/recovery-sql.md`) with that real
+   column name and read the shape off a real good row. Do this every time: it catches a struct type you
+   misread, and whether the unstruct column carries `_schema_version` is settled by looking, not by
+   defaulting. **If it returns no rows, widen the lookback; if the good table genuinely holds no validated
+   events for this entity, do not recover** — recovering would make you, not the loader, establish the
+   column's shape, and the loader can then fail on its next write. Tell the user to land one valid event
+   first, then re-run (`reference/failure-context.md`).
+3. Only now build the **recovery expression**, mapping each `json_extract_scalar(failure_data, '$.field')`
    to its target field/type in the good-table struct's order. The shape depends on the Phase-2 **source**:
    - **contexts** → `CAST(ARRAY[ROW(...)] AS ARRAY(ROW(...)))`, `_schema_version` first (the `contexts_*`
      struct lists it).
    - **unstruct** → a single `CAST(ROW(...) AS ROW(...))` with **no outer `ARRAY[...]`/`ARRAY(...)`**,
      into the `unstruct_event_*` column. Its DESCRIBE struct usually has **no `_schema_version`** field —
-     omit it unless DESCRIBE lists it. (Never the DDL `ARRAY<STRUCT<...>>`/`STRUCT<...>` form — that's
-     invalid in a query.) Both forms in `templates/recovery-sql.md`.
+     omit it unless `DESCRIBE` *and* the validated good row show it (confirm, don't assume). (Never the
+     DDL `ARRAY<STRUCT<...>>`/`STRUCT<...>` form — that's invalid in a query.) Both forms in
+     `templates/recovery-sql.md`.
 
 Emit the **test SELECT** (event_id + reconstructed column + `typeof(...)`). **Do not generate the
 INSERT yet** — have the user run it and paste output back.

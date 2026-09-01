@@ -152,9 +152,14 @@ a guessed value:
 1. Emit **only** the "Finding the recovery column name" query. Wait for the result and read back the
    exact `column_name` and its `data_type`. Do not write any query that references the recovery column
    until you have this — no guessing the name from the Iglu URI.
-2. Then emit the "Inspect a validated event" query written with that **real** column name (or, if no
-   validated row exists yet, fall back to the Iglu schema JSON). This grounds the target field types —
-   never the failed payload.
+2. Then emit the "Inspect a validated event" query written with that **real** column name. **Always run
+   it — on Snowflake it is the only grounding there is**, since the entity column is VARIANT and carries
+   no DDL type. It gives you the target field types *and* tells you whether the unstruct object carries
+   `_schema_version`. Never assume that shape and offer to verify it afterwards. **If it returns no rows, widen the lookback; if the good table genuinely holds no validated
+   events for this entity, do not recover** — you would have no grounding at all, and the INSERT would make
+   you, not the loader, establish the column. Tell the user to land one valid event
+   first, then re-run (`reference/failure-context.md`).
+   Ground the target field types here, never the failed payload.
 
 Only now build the **recovery expression**, one `::TYPE` cast per field. The shape depends on the
 Phase-2 **source**:

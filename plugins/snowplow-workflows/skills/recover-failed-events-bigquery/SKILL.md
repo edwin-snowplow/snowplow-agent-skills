@@ -150,9 +150,14 @@ value:
    exact `column_name` and its `data_type` (which names every struct field, type, and order). Don't
    write any query that references the recovery column until you have this — no guessing it from the
    Iglu URI.
-2. If the `data_type` plus the Phase-3.5 profiling leaves the shape ambiguous, then emit the "Inspect a
-   validated event" query (written with that **real** column name) or ask for the Iglu schema JSON —
-   grounding the target field names/types, never the failed payload.
+2. Then emit the "Inspect a validated event" query (written with that **real** column name) and read the
+   shape off a real good row — **every time, not only when the `data_type` looks ambiguous.** It catches
+   a type you misread, and whether the unstruct column carries `_schema_version` is settled by looking,
+   not by defaulting. **If it returns no rows, widen the lookback; if the good table genuinely holds no validated
+   events for this entity, do not recover** — recovering would make you, not the loader, establish the
+   column's shape, and the loader can then fail on its next write. Tell the user to land one valid event
+   first, then re-run (`reference/failure-context.md`). Ground the target
+   field names/types here, never the failed payload.
 
 Only now build the recovery expression to match `data_type` field-for-field, using the **per-field
 extractor chosen in Phase 3.5** (`reference/failure-context.md`). The shape depends on the Phase-2
@@ -160,7 +165,8 @@ extractor chosen in Phase 3.5** (`reference/failure-context.md`). The shape depe
 - **contexts** → `[STRUCT(...)]` (array of one struct), `_schema_version` first (the `contexts_*`
   `data_type` lists it).
 - **unstruct** → a single `STRUCT(...)` with **no array brackets**, into the `unstruct_event_*` column.
-  Its `data_type` usually has **no `_schema_version`** field — omit it unless the type lists it. Don't
+  Its `data_type` usually has **no `_schema_version`** field — omit it unless the type *and* the
+  validated good row show it (confirm, don't assume). Don't
   apply the contexts "`_schema_version` first" rule; match the actual type. (Both forms in
   `templates/recovery-sql.md`.)
 
