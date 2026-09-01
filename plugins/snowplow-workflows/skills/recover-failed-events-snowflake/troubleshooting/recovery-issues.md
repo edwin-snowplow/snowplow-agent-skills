@@ -77,7 +77,9 @@ schema.
 **Verify.** Compare the payload keys (payload-inspection query) against the schema's field names (a
 validated good row, or the Iglu schema JSON).
 
-**Fix.** If it's a renamed/misspelled schema field, **map the payload key onto the target key name**
+**Fix.** First **ask the user** what should happen to the stray field — dropped, or mapped onto a
+field the schema does define. That's their call, not yours; see *Recovering an `additionalProperties`
+failure* in the SKILL.md. Then apply it. If it's a renamed/misspelled schema field, **map the payload key onto the target key name**
 in the recovery expression — e.g. `'nubmers', contexts_..._failure_1[0]:data:numbers::INTEGER` — the
 payload key and the object key don't have to match. If the field truly isn't in the schema at all, it
 can't be recovered into a column that doesn't exist; the schema must be evolved first (outside this

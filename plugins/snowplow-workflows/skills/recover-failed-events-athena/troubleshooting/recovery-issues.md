@@ -115,7 +115,9 @@ schema.
 **Verify.** Compare the payload keys (payload-inspection query) against the good-table struct field
 names (from `DESCRIBE`).
 
-**Fix.** If it's a renamed/misspelled schema field, **map the payload key onto the target field name**
+**Fix.** First **ask the user** what should happen to the stray field — dropped, or mapped onto a
+field the schema does define. That's their call, not yours; see *Recovering an `additionalProperties`
+failure* in the SKILL.md. Then apply it. If it's a renamed/misspelled schema field, **map the payload key onto the target field name**
 in the recovery expression — e.g. `CAST(json_extract_scalar(failure_data, '$.numbers') AS BIGINT)` in
 the `nubmers` position — the payload key and the struct field name don't have to match. If the field
 truly isn't in the schema at all, it can't be recovered into a column that doesn't exist; the schema
