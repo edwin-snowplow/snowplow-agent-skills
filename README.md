@@ -73,7 +73,11 @@ Where a `snowplow-workflows` skill needs Console access and the `snowplow` plugi
 
 |Skill|What it does|
 |---|---|
-| — | Planned — no skills shipped yet. See [Roadmap](#roadmap) for the box-by-box mapping (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
+| `recover-failed-events-athena` | Recovers Snowplow failed events from an Athena/Iceberg failed-events table back into the good atomic events table — generates the validation-gated recovery SQL, one skill per warehouse. |
+| `recover-failed-events-bigquery` | Recovers Snowplow failed events from a BigQuery failed-events table back into the good atomic events table — validation-gated recovery SQL, built in-warehouse. |
+| `recover-failed-events-databricks` | Recovers Snowplow failed events from a Databricks failed-events table back into the good atomic events table — validation-gated recovery SQL, assembled by a bundled script. |
+| `recover-failed-events-snowflake` | Recovers Snowplow failed events from a Snowflake failed-events table back into the good atomic events table — validation-gated recovery SQL, built in-warehouse. |
+| — | More Analyst skills planned — see [Roadmap](#roadmap) (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
 
 ### Governance & Migration
 
@@ -94,6 +98,7 @@ flowchart LR
     inst --> micro["setup-micro<br/><i>local test pipeline</i>"] --> validate["validate-snowplow-implementation"]
     validate -->|events in /bad| debug["debug-failed-events"]
     debug -->|fix, re-test| validate
+    debug -.->|schema failures already loaded in the warehouse| recover["warehouse recovery<br/><i>one skill per warehouse</i>"]
     e2e["implement-custom-events<br/><i>orchestrates the whole chain</i>"] -.-> spec & design & install & snowtype & micro & validate
     docs["fetch-snowplow-docs<br/><i>utility — any step may call it</i>"]
 
@@ -117,6 +122,7 @@ Dotted arrows mark delegation, not duplication: `implement-custom-events` drives
 | Tracking code written, needs verifying | [`setup-micro`](plugins/snowplow-workflows/skills/setup-micro/SKILL.md) → [`validate-snowplow-implementation`](plugins/snowplow-workflows/skills/validate-snowplow-implementation/SKILL.md) |
 | Events failing / bad rows | [`debug-failed-events`](plugins/snowplow-workflows/skills/debug-failed-events/SKILL.md) |
 | Starting Snowplow work in a fresh repo | [`setup-snowplow-context`](plugins/snowplow-workflows/skills/setup-snowplow-context/SKILL.md) — run it first, once |
+| Schema-validation failures already loaded in your warehouse, to recover into the good events table | by warehouse — [`recover-failed-events-athena`](plugins/snowplow-workflows/skills/recover-failed-events-athena/SKILL.md), [`recover-failed-events-bigquery`](plugins/snowplow-workflows/skills/recover-failed-events-bigquery/SKILL.md), [`recover-failed-events-databricks`](plugins/snowplow-workflows/skills/recover-failed-events-databricks/SKILL.md), [`recover-failed-events-snowflake`](plugins/snowplow-workflows/skills/recover-failed-events-snowflake/SKILL.md) |
 
 ## Layout
 

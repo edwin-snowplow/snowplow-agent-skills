@@ -1,0 +1,328 @@
+---
+name: recover-failed-events-snowflake
+description: Recover Snowplow failed events from a Snowflake failed events table back into the good atomic events table by generating the complete SQL the user runs — identification, payload inspection, a validation-gated test SELECT, the full INSERT, and post-checks. Use to reprocess, reinsert, or repair schema-validation failed events in Snowflake, especially events that failed on a single custom entity/context. Builds the wide INSERT itself with a metadata query over INFORMATION_SCHEMA and reconstructs entities as semi-structured ARRAY/VARIANT with per-field TYPE casts (no strict struct typing, no reserved-word quoting, read from ground truth, never guessed). Triggers: recover failed events in Snowflake, reprocess Snowflake bad rows, reinsert Snowflake schema-validation failures, recover failed events into the Snowflake atomic events table, Snowflake failed event recovery, recover Snowflake failed events with SQL.
+---
+
+# Snowflake failed-events recovery
+
+Recover Snowplow events that failed schema validation on a custom entity — moving them from a failed
+events table back into the good atomic events table — by generating the **complete SQL the user
+runs**. Both are Snowflake tables; the failed events table stores the failure context as a
+semi-structured `ARRAY`/`VARIANT` column.
+
+You are the whole recovery system, from first diagnosis to a ready-to-run INSERT. This is
+**human-in-the-loop**: you generate queries, the user runs them and pastes results back, and you use
+those to generate the next step. You cannot run Snowflake yourself.
+
+**Three rules that shape everything:**
+- **Never ask the user to confirm a fact a query could establish** — the column name, field names,
+  values, schema version, whether rows already exist. If it lives in the warehouse, generate the
+  query.
+- **The repaired entity's shape and types are defined by the Iglu schema, not chosen by you.** Read
+  them from ground truth (a validated good-table row, or the schema JSON) — never guess.
+- **One step at a time — never hand over a query you'd expect the user to edit.** Emit a single query
+  (or one tightly-scoped step), wait for the result, then use it to build the next step. When a query
+  needs a value another query establishes — the recovery column name, a field's type — run that query
+  first and substitute the real value **yourself**. Never emit a query containing a guessed or
+  placeholder value with a "swap this in if it differs" note, never batch a query together with the
+  one whose output it depends on, and never ask the user to edit the SQL you provide.
+
+One run recovers **one failing schema** for **one app_id**. If the user has several, do them one at a
+time.
+
+## Where the knowledge lives (read the form you need, when you need it)
+
+- **Plain-language overview (help centre):** a customer-facing summary of what this skill does — the
+  process, the safety gates, what it can and can't recover — is published at
+  https://support.snowplow.io/articles/5225708172-Recovering-failed-events-in-the-warehouse-with-Claude.
+  Share that link if the user asks "what does this do?".
+
+- **`templates/recovery-sql.md`** — every SQL statement, with placeholders. The thing you actually
+  hand the user at each phase.
+- **`reference/failure-context.md`** — the failure column's VARIANT structure and how to
+  navigate/extract it with `:` and `::TYPE` (and *why* a clean run proves the casts).
+- **`reference/column-classification-and-validation.md`** — how the generator classifies every
+  column, the Phase-3.5 profiling decision, and the Phase-5 validation gate.
+- **`examples/worked-recovery.md`** — a complete run end to end (string→INTEGER), to pattern-match against.
+- **`troubleshooting/recovery-issues.md`** — symptom → cause → verify → fix for when a step goes wrong.
+
+Read the relevant form at each phase rather than working from memory — they encode edge cases
+confirmed against real Snowplow tables.
+
+## What makes Snowflake specific
+
+- **The INSERT builds itself — no script.** A single metadata query joins the good and failed tables'
+  `INFORMATION_SCHEMA.COLUMNS`, classifies each column, and emits the full INSERT as text. Everything
+  is SQL the user runs in Snowflake — there's no bundled script or local code execution to set up.
+- **No strict struct typing.** Entity columns are semi-structured `ARRAY`/`VARIANT`; you reconstruct
+  with `ARRAY_CONSTRUCT(OBJECT_CONSTRUCT(...))` and `::TYPE` casts. There is **no** field-order
+  requirement, **no** reserved-word quoting of keys (they're plain string literals), and **no**
+  Hive→engine type conversion (`reference/column-classification-and-validation.md`).
+- **`::TYPE` coerces and errors — profile, then cast per field.** A `::TYPE` cast coerces both native
+  and string-encoded values (an int sent as `"5"` still casts) and **errors** on a genuinely bad value
+  rather than silent-NULLing. Profiling (Phase 3.5) confirms per field that the whole population
+  coerces, so the built casts are guaranteed to run clean. Never use `TRY_CAST` in the recovery
+  expression — it hides bad values (`reference/failure-context.md`).
+- **Zero-based array access, `:` navigation.** `contexts_..._failure_1[0]:data:field` (Athena is
+  1-indexed; Snowflake is 0-indexed).
+
+---
+
+## The 8-phase flow (the decision tree)
+
+Carry one **time window** through every query so the identified, validated, and recovered sets match
+(see "Time window" in `templates/recovery-sql.md`).
+
+### Phase 1 — Gather tables, offer to help identify
+First, read `.snowplow/agent-context.md` if the project has one (written by `setup-snowplow-context`).
+Its `warehouse` key is the fact that routes between these four sibling skills — it should read
+`snowflake` here; if it says anything else, flag the mismatch and point the user at the matching
+recovery skill instead of continuing. The file doesn't record table names, so you still ask for those
+below, but confirm the warehouse rather than re-establishing it. If the file is absent, offer once to
+run `setup-snowplow-context` (it removes this question for every later skill too), then continue.
+
+Ask for both tables up front (Snowflake `DATABASE.SCHEMA.TABLE`, all three parts each) and when the
+failures happened, in the opening message, so no placeholders linger:
+
+> "First, what are your failed and good events tables (database.schema.table each), and roughly when
+> did the failures happen (a date or range — helps me scan less)? If you're not sure, I'll use a
+> lookback window. And do you want help finding recent failed events, or do you already know the
+> failing schema and app_id you want to recover?"
+
+Then: help identifying → Phase 2. Already know the target → collect the failing schema Iglu URI,
+app_id, and target entity column → Phase 3.
+
+### Phase 2 — Identify the failures
+Lead with the **summary identification query**; read off which schemas fail, at what volume, which
+`failure_type`, which app_ids. **One event can fail on several entities at once**, so the failure
+column is an array with one element per failed entity. The identification query **flattens** it (via
+`LATERAL FLATTEN`) so a schema is surfaced wherever it sits in the array — reading only `[0]` would hide,
+and silently drop from the counts, every schema that isn't an event's first failure. Recover **one
+schema per run** and re-run identification after each to see what remains. Have the user pick **one**
+schema; run the **row-level drill-in** to
+form a fix hypothesis — including whether it's a schema **resolution** failure rather than a
+validation one (see "Recovering a ResolutionError" below). The drill-in also surfaces **`source`**
+(read it via `errors[0]:source`, never the top-level `[0]:source`): if the rows mix `contexts` and
+`unstruct`, the schema failed both as a context entity and as the self-describing event — those recover
+into different columns and must be **separate runs**, so scope to one `source` (see
+`reference/failure-context.md`).
+
+**Offer the duplicate pre-check now (optional).** As soon as the schema is chosen — and before
+building any recovery expression — **explicitly ask** whether they want to confirm these events
+haven't already been recovered; don't silently skip it:
+
+> "Want me to check whether these events have already been recovered before? You can skip this if
+> you know this schema has never been recovered."
+
+If they want it, give the **duplicate pre-check** query (`templates/recovery-sql.md`). It lists any
+`event_id`s already in the good table — expect **none**. If any come back, decide with the user (stop,
+narrow scope, or proceed knowingly). If they skip, note it and move on.
+
+**Get the schema JSON (custom schemas) — fetch before asking.** Then, if the failing schema is a
+**custom schema** (your own vendor, not a Snowplow / Iglu Central one), get its Iglu JSON. Try in
+order: the Console MCP if the official `snowplow` plugin is installed (`.snowplow/agent-context.md`'s
+`mcp-available` records this); else `snowplow-cli data-structures` with Console credentials; else a
+plain HTTP fetch of a public registry or a registry URL the user gives. Only **ask the user to paste**
+the schema when it lives in a private authed registry you can't reach. (`design-tracking-plan` follows
+the same MCP-then-CLI order.) Not strictly required — a validated good row and Phase-3.5 profiling
+ground the recovery, and this replaces none of them — but it's authoritative context, letting you
+sanity-check field names/types/`required`/enums, catch a renamed field, and tell
+a genuinely-bad value from a wrong target type. It helps most in the ResolutionError flow, where
+listing the registry finds the correct schema URI the user often can't recall. Extra confidence, not a
+substitute. (Iglu Central schemas you can read directly.)
+
+### Phase 3 — Inspect the payload
+Run the **payload inspection query** (`LATERAL FLATTEN` + `:` navigation) so the user sees the real
+value behind each field. Confirm exact field names and values, and note **how each value is encoded**
+(a quoted number is a string-encoded int). Expect failures to be **compound**: one schema's failed
+events can combine a renamed/missing field *and* a wrong type.
+
+If the failure is **`additionalProperties`** — the payload carries a field the schema doesn't define —
+stop and ask the user what should happen to that field before you profile anything. Their answer
+decides which fields Phase 3.5 profiles. See *Recovering an `additionalProperties` failure* below.
+
+### Phase 3.5 — Profile & confirm coercibility (gate — do not skip)
+Before building any recovery expression, run the **field profiling query** (`templates/recovery-sql.md`)
+— it can't error (`TYPEOF`, `TRY_CAST`, `COUNT_IF`) — to learn, per field across *all* failed rows, the
+VARIANT types present and whether every value casts to its target type. Use it to (a) confirm the whole
+population shares **one** recovery, and (b) decide per field: **build the `::TYPE` cast** once
+`_uncoercible = 0`, **stop & partition** where anything won't coerce, and treat `_absent` per whether
+the schema requires the field. Never use `TRY_CAST` in the recovery expression. Decision table:
+`reference/column-classification-and-validation.md`.
+
+### Phase 4 — Build & emit the test SELECT
+Do these **in order, one query at a time** — never batch them, and never fill a downstream query with
+a guessed value:
+1. Emit **only** the "Finding the recovery column name" query. Wait for the result and read back the
+   exact `column_name` and its `data_type`. Do not write any query that references the recovery column
+   until you have this — no guessing the name from the Iglu URI.
+2. Then emit the "Inspect a validated event" query written with that **real** column name. **Always run
+   it — on Snowflake it is the only grounding there is**, since the entity column is VARIANT and carries
+   no DDL type. It gives you the target field types *and* tells you whether the unstruct object carries
+   `_schema_version`. Never assume that shape and offer to verify it afterwards. **If it returns no rows, widen the lookback; if the good table genuinely holds no validated
+   events for this entity, do not recover** — you would have no grounding at all, and the INSERT would make
+   you, not the loader, establish the column. Tell the user to land one valid event
+   first, then re-run (`reference/failure-context.md`).
+   Ground the target field types here, never the failed payload.
+
+Only now build the **recovery expression**, one `::TYPE` cast per field. The shape depends on the
+Phase-2 **source**:
+- **contexts** → `ARRAY_CONSTRUCT(OBJECT_CONSTRUCT('_schema_version', '<ver>', '<field>', <path>::<TYPE>, ...))`
+  — `_schema_version` first (the loader writes it into contexts objects), into the `contexts_*` column.
+- **unstruct** → a single `OBJECT_CONSTRUCT('<field>', <path>::<TYPE>, ...)` with **no outer
+  `ARRAY_CONSTRUCT`**, into the `unstruct_event_*` column (a single VARIANT object). Match a validated
+  unstruct event's keys — on the Databricks/BigQuery loaders the event object carries **no
+  `_schema_version`** (only contexts objects do), so omit it unless a validated event shows it. (Both
+  forms in `templates/recovery-sql.md`.)
+
+Emit the **test SELECT** using the template's two-CTE form — build `recovered` in a CTE, then
+`TYPEOF(recovered[0]:<field>)` for contexts (or `TYPEOF(recovered:<field>)` for unstruct, since
+`recovered` is then an OBJECT not an array) in the outer query (`TYPEOF()` needs a VARIANT, so it can't
+wrap a `::TYPE` cast directly). **Do not generate the INSERT yet** — have the user run it and paste
+output back.
+
+### Phase 5 — Validate (gate — do not skip)
+Check the pasted output against the validation gate in
+`reference/column-classification-and-validation.md`: the query **ran clean** (decisive — Phase 3.5
+proved coercibility and `::TYPE` errors rather than silent-NULL), `TYPEOF()` matches the intended
+types, `_schema_version` present **for a contexts run** (a contexts object carries it; an unstruct
+object usually does not — match the validated event), row count matches, no unexpected nulls, values
+corrected. If anything fails, fix the expression and re-emit the test SELECT (back to Phase 4). Diagnostics:
+`troubleshooting/recovery-issues.md`.
+
+### Phase 6 — Choose the write path
+Ask the user which write path they want, **spelling out both options and the recommendation** — don't
+ask a bare "how do you want to write these back?". Use words like:
+
+> "Validation passed. How would you like to write the recovered rows?
+> **1. Via a staging table (recommended)** — I insert into a temporary copy of your good table first,
+> you inspect the recovered rows there, then we promote them into the good atomic events table in one
+> step. Safest, and easy to abandon if anything looks off.
+> **2. Directly into the good table** — insert straight into `<good table>`. Faster, but the rows are
+> live immediately (Time Travel is still available to compare before/after)."
+
+If they pick staging, create it with `CREATE TABLE ... LIKE` the good table (mirrors columns/order
+exactly). The chosen target becomes the INSERT target; column classification always comes from the
+**good** table.
+
+### Phase 7 — Generate the INSERT (Snowflake builds it)
+Give the user the **INSERT-generator query** with placeholders filled: table identifiers, INSERT
+target, recovery column (`contexts_*` or `unstruct_event_*`), the validated recovery expression (single
+quotes doubled `''`), failing schema URI, app_id, window, and the **`<source>` predicate** (`contexts`
+or `unstruct`) scoping `prep` to the source you're recovering — so a schema that failed both ways is two
+runs into two columns. It returns one cell — the full INSERT. Review it with them (recovery column
+carries the expression, failure column nulled, `load_tstamp` refreshed, column count matches; sibling
+entity columns pass through, so a valid entity the event also carried is preserved, not nulled). If the
+recovery column wasn't matched, see `troubleshooting/recovery-issues.md`.
+
+### Phase 8 — Run, validate, promote
+If the duplicate pre-check was skipped in Phase 2 and there's any doubt, offer it once more. Run the
+INSERT into the chosen target; validate what landed (row count + spot-check).
+- **Direct path:** done. Optionally compare before/after with Time Travel (`AT (TIMESTAMP => ...)`).
+- **Staging path:** promote (`INSERT INTO <good> SELECT * FROM <staging>`), re-validate, then offer
+  to `DROP TABLE` the staging table.
+
+---
+
+## Recovering a ResolutionError (schema couldn't be resolved)
+
+This flow is **not** limited to `ValidationError` cases. A **ResolutionError** means Iglu couldn't
+*resolve* (fetch) the referenced schema at all; a **ValidationError** means the schema resolved but
+the data didn't conform. Tell them apart in Phase 2/3 from the `failure_type` and the `errors`
+content — and do **not** treat a ResolutionError as automatically unrecoverable.
+
+A ResolutionError **is** recoverable in-warehouse in these cases:
+
+- **Transient / misconfigured registry** — the schema was valid; Iglu was just unreachable. The
+  payload already conforms; reconstruct it into the correct column unchanged.
+- **Wrong URI** — a typo in the vendor/name, or a version that doesn't exist. Re-point to the
+  corrected URI, reconstruct into *that* schema's column, and adjust any fields the correct schema
+  requires (exactly as in a ValidationError recovery).
+- **Never published** — register the schema in Iglu first (outside the warehouse), then recover.
+
+Two things must be true before the INSERT can land — confirm both:
+
+1. **The correct schema now resolves** — same URI if transient, the corrected URI if it was wrong,
+   or a newly registered one.
+2. **A target column exists** in the good table for the correct schema. Loaders materialise an
+   entity's column only after a valid event of that schema has loaded, so a schema that never
+   resolved may have **no column yet**. Confirm with the "Finding the recovery column name" query
+   (`templates/recovery-sql.md`) run against the **corrected** schema name — a returned row is your
+   confirmation. If none comes back, the schema must load once (or the column be created) first.
+
+**Key subtlety — filter on the recorded URI, build into the corrected one:**
+
+- **Filter** the failed rows by the schema URI **as stored in the failure context**
+  (`contexts_com_snowplowanalytics_snowplow_failure_1[0]:schema`) — the original, possibly-wrong URI
+  the event carried. Every WHERE predicate (drill-in, payload, test `prep`, INSERT `prep`, duplicate
+  pre-check) must match on that recorded value.
+- **Derive** the target column and `_schema_version` from the **corrected** URI.
+- Same URI (transient) → nothing else changes. Different (typo / version fix) → keep the predicates
+  on the recorded URI but reconstruct into the corrected column/version.
+
+**Only bail out** when the schema genuinely can't be made to resolve or no target column can exist.
+Diagnostics: `troubleshooting/recovery-issues.md`.
+
+---
+
+## Recovering an `additionalProperties` failure
+
+The event carried a field the schema doesn't define, so the target column has no home for that value.
+Something has to happen to it, and by the **human-in-the-loop** rule that call is the user's. Dropping
+it silently loses data; guessing a destination for it is worse. **Ask before building the expression.**
+
+Show the stray field and its real values from the payload inspection, then put the options in words:
+
+> "These events failed because they carry a `<field>` the schema doesn't define — example values
+> `<v1>`, `<v2>`. The recovered event can't keep it as-is. How would you like it handled?
+> **1. Drop it** — I recover every other field and discard `<field>`. That value won't be in the
+> recovered events, though the failed-events table still holds the originals.
+> **2. Map it onto a field the schema does define** — if `<field>` is a rename or misspelling of an
+> existing field, I read the value from `<field>` and write it under that field's name. Tell me which.
+> **3. Neither** — if the value genuinely belongs in the schema, the schema needs a new field first.
+> Evolve it, let the loader create the column, then recover."
+
+Handling the answer:
+
+- **Drop** → reconstruct only the fields the target type lists. State in the run summary which field was
+  dropped and how many events it affected. Never let a discard pass unmentioned.
+- **Map** → read from the payload key, emit under the **target** object key name; the two don't have to
+  match, since the payload key is a JSON path and the target is a object key. Confirm the chosen target
+  actually appears in a validated good row (the entity column is VARIANT, so there is no DDL type) and in the validated good row (Phase 4) before building.
+- **Neither** → stop. A field the schema doesn't define has no column to recover into, and this skill
+  can't evolve the schema.
+
+If one event tripped on several stray fields, ask per field — a drop and a map can both apply to the
+same event.
+
+## Recovering an unstruct (self-describing event) failure
+
+Same 8-phase flow, targeting the **self-describing event** instead of a context entity. The drill-in
+`source = unstruct` means the schema failed as the event body, recovering into the
+`unstruct_event_<vendor>_<name>_<major>` column. Four things differ from the contexts path — everything
+else (identification, profiling gate, the generator, pass-through, validation) is identical:
+
+1. **Target column is a single VARIANT object, not an array of objects.**
+2. **Reconstruct with a bare `OBJECT_CONSTRUCT(...)`** — no outer `ARRAY_CONSTRUCT`.
+3. **Usually no `_schema_version` key.** On the Databricks/BigQuery loaders the event object omits it
+   (only contexts objects carry it) — match a validated unstruct event and omit it unless it shows.
+4. **Inspection/validation read the object directly** — `recovered:field` / `<recovery_column>:field`,
+   no `[0]` and no `ARRAY_SIZE`.
+
+For Phase 7, set the generator's `<source>` predicate to `unstruct` and `<recovery_column>` to the
+`unstruct_event_*` column. A schema that failed **both** ways is two separate runs, one per source. A
+valid entity the event also carried (a passing `contexts_*`) is preserved automatically via pass-through.
+
+---
+
+## When this skill is *not* the right answer
+
+- **The event failed for a reason a data fix can't touch** — enrichment failures, adapter failures,
+  or a genuinely malformed event are out of scope; diagnose the `failure_type` first with the `debug-failed-events` skill. (A
+  **ResolutionError** is *not* automatically excluded — see "Recovering a ResolutionError" above.)
+- **The underlying values are genuinely unrecoverable** (not just mis-typed) — if a `::TYPE` cast
+  can't coerce the values, they may need fixing at the tracker/source, not backfilled.
+- **The schema itself is wrong** and should be evolved — recovering into the old shape may be the
+  wrong move; consider a schema version bump instead.
+- **A different warehouse** — use the sibling recovery skill for BigQuery, Athena/Iceberg, or
+  Databricks; the dialect and load mechanics differ.

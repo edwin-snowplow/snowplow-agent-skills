@@ -7,3 +7,4 @@ __pycache__/
 .kiro/
 .qwen/
 skills-lock.json
+CONTEXT.md
