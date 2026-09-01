@@ -77,7 +77,8 @@ Where a `snowplow-workflows` skill needs Console access and the `snowplow` plugi
 | `recover-failed-events-bigquery` | Recovers Snowplow failed events from a BigQuery failed-events table back into the good atomic events table — validation-gated recovery SQL, built in-warehouse. |
 | `recover-failed-events-databricks` | Recovers Snowplow failed events from a Databricks failed-events table back into the good atomic events table — validation-gated recovery SQL, assembled by a bundled script. |
 | `recover-failed-events-snowflake` | Recovers Snowplow failed events from a Snowflake failed-events table back into the good atomic events table — validation-gated recovery SQL, built in-warehouse. |
-| — | More Analyst skills planned — see [Roadmap](#roadmap) (once-off queries, data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
+| `query-snowplow-data` | Teaches Snowplow-specific SQL patterns for querying atomic data — unnesting entities, deduplication, bot filtering, timestamps, identity and sessions — dialect-correct for Snowflake, BigQuery, Databricks, and Redshift, including Lake Loader Iceberg tables. |
+| — | More Analyst skills planned — see [Roadmap](#roadmap) (data-quality debugging, dbt package setup, unified/attribution models, semantic definitions). |
 
 ### Governance & Migration
 
@@ -92,6 +93,7 @@ The skills compose into one journey — decide what to measure, structure it int
 ```mermaid
 flowchart LR
     ctx["setup-snowplow-context<br/><i>once per project</i>"] -.-> spec
+    ctx -.-> query["query-snowplow-data<br/><i>analyst SQL patterns</i>"]
     spec["create-data-spec<br/><i>what to measure</i>"] --> design["design-tracking-plan<br/><i>how to structure it</i>"]
     design --> snowtype["setup-snowtype<br/><i>typed tracking code</i>"] --> inst["instrument the code"]
     install["install-snowplow-tracking<br/><i>if no tracker yet</i>"] --> inst
@@ -121,6 +123,7 @@ Dotted arrows mark delegation, not duplication: `implement-custom-events` drives
 | An app with no Snowplow tracker yet | [`install-snowplow-tracking`](plugins/snowplow-workflows/skills/install-snowplow-tracking/SKILL.md) |
 | Tracking code written, needs verifying | [`setup-micro`](plugins/snowplow-workflows/skills/setup-micro/SKILL.md) → [`validate-snowplow-implementation`](plugins/snowplow-workflows/skills/validate-snowplow-implementation/SKILL.md) |
 | Events failing / bad rows | [`debug-failed-events`](plugins/snowplow-workflows/skills/debug-failed-events/SKILL.md) |
+| Data loaded in your warehouse, writing analysis SQL | [`query-snowplow-data`](plugins/snowplow-workflows/skills/query-snowplow-data/SKILL.md) |
 | Starting Snowplow work in a fresh repo | [`setup-snowplow-context`](plugins/snowplow-workflows/skills/setup-snowplow-context/SKILL.md) — run it first, once |
 | Schema-validation failures already loaded in your warehouse, to recover into the good events table | by warehouse — [`recover-failed-events-athena`](plugins/snowplow-workflows/skills/recover-failed-events-athena/SKILL.md), [`recover-failed-events-bigquery`](plugins/snowplow-workflows/skills/recover-failed-events-bigquery/SKILL.md), [`recover-failed-events-databricks`](plugins/snowplow-workflows/skills/recover-failed-events-databricks/SKILL.md), [`recover-failed-events-snowflake`](plugins/snowplow-workflows/skills/recover-failed-events-snowflake/SKILL.md) |
 

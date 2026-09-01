@@ -24,7 +24,7 @@ Source: the field skills map (`docs/snowplow-skills-map.pdf`). Waves are indicat
 | Testing locally / Spin up Micro | Developer | shipped | `setup-micro`, `validate-snowplow-implementation` | 1 |
 | Debugging failed events | Developer | shipped | `debug-failed-events` (local-first; production side is *product* `troubleshooting`) | 1 |
 | Workflow: auto-implement events + monitor in Micro | Developer | shipped | `implement-custom-events` | 1 |
-| Writing once-off queries | Analyst | planned | — | 2 |
+| Writing once-off queries | Analyst | shipped | `query-snowplow-data` | 2 |
 | Debugging data quality issues | Analyst | planned | — | 2 |
 | Event recovery (+ keyhole backfills) | Analyst | shipped | Athena / BigQuery / Snowflake / Databricks recovery skills; keyhole backfills not yet | 3 |
 | New dbt project for Snowplow models | Analytics Eng | planned | — | 2 |
