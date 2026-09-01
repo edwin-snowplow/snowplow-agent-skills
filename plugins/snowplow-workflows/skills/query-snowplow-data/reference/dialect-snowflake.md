@@ -37,9 +37,8 @@ onward, or a downstream join will multiply rows further.
 columns are exposed as **strongly typed structs** — every sub-column has a concrete type (`INTEGER`,
 `STRING`, …), so you access them with plain dot notation and no cast is needed. That is a different
 access pattern from native Snowflake tables, which are schemaless VARIANT and need `:` paths plus
-`::TYPE` casts. Same warehouse, two shapes depending on which table you're on — check which one you
-have (`DESCRIBE TABLE`, or just look at the column's declared type) before writing any entity access,
-rather than assuming the VARIANT pattern above applies everywhere.
+`::TYPE` casts. Same warehouse, two shapes depending on which table you're on — check which you have
+before writing any entity access, rather than assuming the VARIANT pattern above applies everywhere.
 
 ## Beyond this sheet
 
