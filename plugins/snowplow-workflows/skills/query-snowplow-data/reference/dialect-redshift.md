@@ -8,7 +8,8 @@ physical layout rather than fighting it).
 
 Redshift has **no in-row entity columns**. Each entity or event schema is shredded out into its own
 table — e.g. `contexts_com_acme_product_1` becomes the table `atomic.com_acme_product_1` — which you
-join back to `atomic.events` to bring the entity's fields alongside the event.
+join back to `atomic.events` to bring the entity's fields alongside the event. A schema that crossed
+a major version has several such tables (`_1`, `_2`) — UNION ALL them per `schema-versions.md`.
 
 ## Join rule (correctness-critical)
 

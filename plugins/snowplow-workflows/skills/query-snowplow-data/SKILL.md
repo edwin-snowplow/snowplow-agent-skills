@@ -62,6 +62,7 @@ never assumed.
 | Which timestamp to filter or order by | `reference/timestamps.md` |
 | Counting users or sessions | `reference/identity-and-sessions.md` |
 | Engagement or time-on-page | `reference/page-pings-and-engagement.md` |
+| A field whose history spans schema major versions (`_1` and `_2` columns or tables) | `reference/schema-versions.md` |
 
 ## Step 5 — execute or hand off
 

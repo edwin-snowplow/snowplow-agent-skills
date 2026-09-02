@@ -13,6 +13,8 @@ didn't expect.
   not an array. Don't index it with `[0]`; read its fields directly.
 - Native (non-Iceberg) tables are schemaless VARIANT throughout: navigate with `:` (e.g.
   `f.value:product_id`) and cast with `::TYPE` (e.g. `::VARCHAR`).
+- A field whose schema crossed a major version lives in several `_<major>` columns — COALESCE across
+  them per `schema-versions.md`.
 
 ## Unnest and join
 

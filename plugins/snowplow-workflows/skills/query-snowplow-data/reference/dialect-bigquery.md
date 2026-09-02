@@ -12,6 +12,8 @@ column name.
   `[SAFE_OFFSET(n)]`; read fields with dot access (`p.product_id`).
 - `unstruct_event_<vendor>_<name>_<major>` — the self-describing event — is a **single STRUCT**, not
   repeated. Read its fields directly with dot access; no `UNNEST`, no offset.
+- A field whose schema crossed a major version lives in several version-suffixed columns — COALESCE
+  across them per `schema-versions.md`.
 
 ## Loader v1 vs v2 gotcha
 

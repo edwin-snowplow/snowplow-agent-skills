@@ -11,6 +11,8 @@ cast that only errors in certain workspace configurations.
 - `unstruct_event_<vendor>_<name>_<major>` — the self-describing event — is a single STRUCT, read
   directly with dot access, no explode needed.
 - Tables are addressed with **Unity Catalog three-part naming**: `catalog.schema.events`.
+- A field whose schema crossed a major version lives in several `_<major>` columns — COALESCE across
+  them per `schema-versions.md`.
 
 **ANSI-mode cast strictness:** whether a bad `CAST` errors or silently returns NULL depends on the
 workspace's SQL mode. Under ANSI mode a cast that can't succeed **errors**; outside ANSI mode it
