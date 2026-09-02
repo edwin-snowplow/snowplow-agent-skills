@@ -23,8 +23,8 @@ Expand an entity array with `LATERAL FLATTEN` and read fields off `f.value` with
 SELECT e.event_id, f.value:product_id::VARCHAR AS product_id
 FROM atomic.events e,
 LATERAL FLATTEN(input => e.contexts_com_acme_product_1) f
-WHERE e.derived_tstamp >= DATEADD(day, -7, CURRENT_DATE)
-  AND e.collector_tstamp >= DATEADD(day, -8, CURRENT_DATE);
+WHERE e.derived_tstamp >= DATEADD(day, -7, CURRENT_DATE)    -- analysis filter
+  AND e.collector_tstamp >= DATEADD(day, -8, CURRENT_DATE);  -- physical-pruning bound (slightly wider to avoid clock-skew events at edge)
 ```
 
 **Fan-out warning:** an event carrying N array elements for that entity becomes N output rows — the

@@ -39,7 +39,7 @@ never modify the file — `setup-snowplow-context` is its only writer.
 | `bigquery` | `reference/dialect-bigquery.md` |
 | `databricks` | `reference/dialect-databricks.md` |
 | `redshift` | `reference/dialect-redshift.md` |
-| `athena` | Athena is typically the failed-events diagnosis engine, not the analyst warehouse — check whether the user actually means failed events (→ `debug-failed-events` or the relevant recovery skill). For a genuine good-event query via Athena, fetch current docs at runtime; the Iceberg notes in `reference/dialect-snowflake.md` (typed structs) partially apply. |
+| `athena` | Athena is typically the failed-events diagnosis engine, not the analyst warehouse — check whether the user actually means failed events (→ `debug-failed-events` or the relevant recovery skill). For a genuine good-event query via Athena, fetch current docs at runtime. |
 | `none-yet` / `unknown` / missing | Offer to run `setup-snowplow-context` once; otherwise ask which warehouse. |
 
 ## Step 3 — table format (Snowflake and Databricks only)

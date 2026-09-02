@@ -7,7 +7,7 @@ cast that only errors in certain workspace configurations.
 ## Column layout
 
 - `contexts_<vendor>_<name>_<major>` — an entity, e.g. `contexts_com_acme_product_1` — is an **ARRAY
-  of STRUCT**. Expand it with `LATERAL VIEW EXPLODE`, then read fields with dot access.
+  of STRUCT**. Expand it with `LATERAL VIEW EXPLODE`, then read fields with dot access; alternatively, use `inline()` when you want all struct fields as columns in one step.
 - `unstruct_event_<vendor>_<name>_<major>` — the self-describing event — is a single STRUCT, read
   directly with dot access, no explode needed.
 - Tables are addressed with **Unity Catalog three-part naming**: `catalog.schema.events`.

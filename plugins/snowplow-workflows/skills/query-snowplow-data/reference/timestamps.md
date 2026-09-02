@@ -4,7 +4,7 @@
 and order by for a given purpose, and why the column a table is physically organised on is often not
 the column your analysis logic should filter on.
 
-## The five that matter
+## Which timestamp to use
 
 | Column | What it is | When to use it |
 |---|---|---|
