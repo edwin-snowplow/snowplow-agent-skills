@@ -39,6 +39,7 @@ FROM atomic.events;
   columns too (`_1_0_0`, `_1_0_1`, `_2_0_0`). Inspect `INFORMATION_SCHEMA.COLUMNS` first — already
   the standing rule in `dialect-bigquery.md`.
 - **Redshift:** no in-row columns — each major version is its own shredded table
-  (`atomic.com_acme_product_1`, `atomic.com_acme_product_2`). UNION ALL the tables (or LEFT JOIN
-  each to `atomic.events` and COALESCE), keeping the both-keys join rule from
-  `dialect-redshift.md` (`root_id = event_id AND root_tstamp = collector_tstamp`) on every table.
+  (`atomic.com_acme_product_1`, `atomic.com_acme_product_2`). UNION ALL the tables with aligned
+  select lists (their column sets differ across majors), or LEFT JOIN each to `atomic.events` and
+  COALESCE — either way keeping the both-keys join rule from `dialect-redshift.md`
+  (`root_id = event_id AND root_tstamp = collector_tstamp`) on every table.
