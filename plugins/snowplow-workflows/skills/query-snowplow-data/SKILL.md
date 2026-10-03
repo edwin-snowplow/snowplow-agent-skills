@@ -18,7 +18,7 @@ Don't use this skill when:
 
 - Events are failing validation before they ever land in the warehouse — use `debug-failed-events`.
 - Failed events already sit in a warehouse failed-events table and need recovering into the good
-  events table — use the relevant `recover-failed-events-*` skill.
+  events table — use the `recover-failed-events` skill.
 - The job is designing schemas or entities rather than querying data already collected — use
   `design-tracking-plan`.
 - The job is building or configuring dbt models — out of scope for this skill, planned for a later
@@ -39,7 +39,7 @@ never modify the file — `setup-snowplow-context` is its only writer.
 | `bigquery` | `reference/dialect-bigquery.md` |
 | `databricks` | `reference/dialect-databricks.md` |
 | `redshift` | `reference/dialect-redshift.md` |
-| `athena` | Athena is typically the failed-events diagnosis engine, not the analyst warehouse — check whether the user actually means failed events (→ `debug-failed-events` or the relevant recovery skill). For a genuine good-event query via Athena, fetch current docs at runtime. |
+| `athena` | Athena is typically the failed-events diagnosis engine, not the analyst warehouse — check whether the user actually means failed events (→ `debug-failed-events` or `recover-failed-events`). For a genuine good-event query via Athena, fetch current docs at runtime. |
 | `none-yet` / `unknown` / missing | Offer to run `setup-snowplow-context` once; otherwise ask which warehouse. |
 
 ## Step 3 — table format (Snowflake and Databricks only)
